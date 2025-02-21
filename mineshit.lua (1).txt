@@ -1,0 +1,78 @@
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local mouse = player:GetMouse()
+local originalWalkSpeed
+
+local function isMouseOverUI()
+	return #player.PlayerGui:GetGuiObjectsAtPosition(mouse.X, mouse.Y) > 0
+end
+
+local function loadAnimation(animationId)
+	local character = player.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+	local animation = Instance.new("Animation")
+	animation.AnimationId = animationId
+	return humanoid:LoadAnimation(animation)
+end
+
+
+local clickAnimation = loadAnimation("rbxassetid://168268306")
+local shiftAnimation = loadAnimation("rbxassetid://142890187")
+
+local function Click()
+	if clickAnimation then
+		clickAnimation.Priority = Enum.AnimationPriority.Idle
+		clickAnimation:Stop()
+		task.wait(0.01)
+		clickAnimation:Play()
+		clickAnimation:AdjustSpeed(2)
+		task.delay(0.1, function()
+			if clickAnimation.IsPlaying then
+				clickAnimation:Stop()
+			end
+		end)
+	end
+end
+
+local function Shift(isPressed)
+	local character = player.Character
+	if not character then return end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	if isPressed then
+		originalWalkSpeed = originalWalkSpeed or humanoid.WalkSpeed
+		humanoid.WalkSpeed = originalWalkSpeed - 10
+		if shiftAnimation then
+			shiftAnimation:Play()
+			shiftAnimation.Priority = Enum.AnimationPriority.Core
+		end
+	else
+		if originalWalkSpeed then
+			humanoid.WalkSpeed = originalWalkSpeed
+			originalWalkSpeed = nil
+		end
+		if shiftAnimation then
+			shiftAnimation:Stop()
+		end
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if not gameProcessed then
+		if input.UserInputType == Enum.UserInputType.MouseButton1 and not isMouseOverUI() then
+			Click()
+		elseif input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift then
+			Shift(true)
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if not gameProcessed and (input.KeyCode == Enum.KeyCode.LeftShift or input.KeyCode == Enum.KeyCode.RightShift) then
+		Shift(false)
+	end
+end)
