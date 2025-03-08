@@ -1,0 +1,1153 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Behavior Controls
+local BEHAVIORS = {
+	ENABLE_BACK_MOVEMENT = true,
+	ENABLE_FRONT_MOVEMENT = true,
+	ENABLE_INCHING = true,
+	ENABLE_PATTERN_DETECTION = true,
+	ENABLE_ITEM_HANDLING = true,
+	ENABLE_SEAT_HANDLING = true,
+	ENABLE_BOOMBOX = true,
+}
+
+local BOOMBOX_CONFIG = {
+	RADIUS = 4,
+	SOUND_ID = "6644572826",
+	CHECK_INTERVAL = 0.5,
+	GRIP_POS = Vector3.new(-8.5, 0, 0),
+	lastBoomBoxCheck = 0,
+	currentBoomBox = nil,
+	toolAnimTrack = nil,
+	animationConnection = nil,
+	animatorConnection = nil
+}
+
+local ITEMS_TO_EQUIP = {
+	"Pizza",
+	"Burger",
+	"Newspaper",
+	"Soda",
+}
+
+-- Configuration
+local timeout = 0.01
+local IGNORE_GAZE_CHANCE = 0.3
+local LOOKAT_CHANCE = 0.45
+local LOOKAWAY_CHANCE = 0.6
+local RADIUS = 3
+local TARGET_SWITCH_TIME_MIN = 10
+local TARGET_SWITCH_TIME_MAX = 30
+local BACK_DISTANCE = 4
+local FRONT_DISTANCE = 4
+local CLOSE_DISTANCE_MIN = 0.1
+local CLOSE_DISTANCE_MAX = 0.25
+local LOOK_DETECTION_RADIUS = 20
+local LOOK_ANGLE_THRESHOLD = math.rad(85)
+local MINIMUM_DISTANCE_TO_TARGET = 2
+local INCH_AMOUNT = 2
+local INCH_INTERVAL_MIN = 0.1
+local INCH_INTERVAL_MAX = 2
+local INITIAL_WAIT_MIN = 0.5
+local INITIAL_WAIT_MAX = 5
+local ITEM_SWITCH_INTERVAL_MIN = 5
+local ITEM_SWITCH_INTERVAL_MAX = 15
+local TOOL_ACTIVATE_CHANCE = 0.3
+local TOOL_ACTIVATE_CHECK_INTERVAL = 1
+local REVERSE_BEHAVIOR_CHANCE = 0.3
+local BACKWARDS_INCH_AMOUNT = 2
+local BACKWARDS_MINIMUM_DISTANCE = 8
+local FRONT_MOVEMENT_CHANCE = 0.05
+local REACTION_CHANCE = 0.5
+
+local PATTERN_DETECTION = {
+	CHECK_INTERVAL = 0.5,
+	HISTORY_LENGTH = 10,
+	THRESHOLD = 4,
+	SMALL_RANGE = {min = 0.1, max = 1},
+	LARGE_RANGE = {min = 3, max = 4},
+	TARGET_SWITCH_DELAY = 5,
+	MOVEMENT_CHECK_INTERVAL = 0.5,
+	PATTERN_THRESHOLD = 3,
+	DIRECTION_CHANGE_THRESHOLD = 2,
+	NEARBY_PLAYER_RADIUS = 15
+}
+
+local MINIMUM_DISTANCE_BEHAVIOR = {
+	FRONT_MOVEMENT_SWITCH_CHANCE = 0.3,
+	FACING_NOD_COOLDOWN = 3,
+	lastFacingNod = 0
+}
+
+local STUCK_DETECTION = {
+	VELOCITY_THRESHOLD = 0.1,
+	CHECK_INTERVAL = 0.5,
+	STUCK_DURATION = 1.0,
+	LAST_POSITION = nil,
+	LAST_CHECK_TIME = 0,
+	STUCK_START_TIME = 0,
+	IS_STUCK = false,
+	JUMP_COOLDOWN = 1.5,
+	LAST_FORCED_JUMP = 0
+}
+
+local RAYCAST_CONFIG = {
+	DISTANCE = 3.5,
+	HEIGHT_OFFSET = 2,
+	CHECK_INTERVAL = 0.05,
+	JUMP_COOLDOWN = 0.3,
+	FILTER_TYPE = Enum.RaycastFilterType.Exclude
+}
+
+-- Movement states
+local isMovingBack = true
+local isMoving = false
+local beingLookedAt = false
+local isInchingEnabled = false
+local isReverseBehavior = false
+local isFrontMovementEnabled = false
+local isJumping = false
+local isMovingForward = false
+local isMovingBackward = false
+local lastInchTime = 0
+local inchingInProgress = false
+local currentEquippedItem = nil
+local lastItemSwitch = 0
+local lastActivateCheck = 0
+local lastSeatChange = 0
+local lastMovementCheck = 0
+local movementHistory = {}
+local smallRangeCount = 0
+local largeRangeCount = 0
+local lastTargetPosition = nil
+local lastJumpAttempt = 0
+local jumpAttemptsCount = 0
+local currentTarget = nil
+local currentBehaviorState = "none"
+local lastTargetSwitch = 0
+local targetSwitchDelay = 0
+local playerMovementHistory = {}
+local lastPatternCheck = 0
+local lastJumpTime = 0
+local DEBUG_TARGET_PLAYER_NAME = "ballgobler820"
+local DEBUG_MODE = true
+local targetReferencePart = nil
+
+local function GetCharacterComponents()
+	local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+	local Humanoid = Character:FindFirstChild("Humanoid") or Character:WaitForChild("Humanoid")
+	local HumanoidRootPart
+	repeat
+		HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+		task.wait()
+	until HumanoidRootPart
+	if not targetReferencePart then --doesnt work idk why
+		targetReferencePart = Instance.new("Part")
+		targetReferencePart.Name = "TargetReferencePart"
+		targetReferencePart.Size = Vector3.new(0.5, 0.5, 0.5)
+		targetReferencePart.Transparency = 0.5
+		targetReferencePart.CanCollide = false
+		targetReferencePart.Anchored = true
+		targetReferencePart.Parent = Character
+	end
+	targetReferencePart.Position = HumanoidRootPart.Position
+	return Character, Humanoid, HumanoidRootPart
+end
+
+local Character, Humanoid, HumanoidRootPart = GetCharacterComponents()
+local bodyGyro = Instance.new("BodyGyro")
+bodyGyro.MaxTorque = Vector3.new(0, math.huge, 0)
+bodyGyro.P = 10000
+bodyGyro.D = 100
+bodyGyro.Parent = HumanoidRootPart
+
+local function GetRigType(player)
+	if not player or not player.Character then return "None" end
+	local humanoid = player.Character:FindFirstChild("Humanoid")
+	if not humanoid then return "None" end
+	return humanoid.RigType == Enum.HumanoidRigType.R6 and "R6" or "R15"
+end
+
+local function UnequipCurrentItem()
+	if not BEHAVIORS.ENABLE_ITEM_HANDLING then return end
+	if currentEquippedItem then
+		local backpack = LocalPlayer:FindFirstChild("Backpack")
+		if backpack then
+			currentEquippedItem.Parent = backpack
+			currentEquippedItem = nil
+		end
+	end
+end
+
+local function EquipRandom()
+	if not BEHAVIORS.ENABLE_ITEM_HANDLING then return end
+	local backpack = LocalPlayer:FindFirstChild("Backpack")
+	if not backpack then return end
+	local availableItems = {}
+	for _, itemName in ipairs(ITEMS_TO_EQUIP) do
+		local item = backpack:FindFirstChild(itemName)
+		if item then
+			table.insert(availableItems, item)
+		end
+	end
+	if #availableItems > 0 then
+		if currentEquippedItem then
+			currentEquippedItem.Parent = backpack
+		end
+		local randomItem = availableItems[math.random(1, #availableItems)]
+		randomItem.Parent = Character
+		currentEquippedItem = randomItem
+		lastItemSwitch = tick()
+	end
+end
+
+local function ItemHandler()
+	if not BEHAVIORS.ENABLE_ITEM_HANDLING then return end
+	if not beingLookedAt then
+		UnequipCurrentItem()
+		return
+	end
+	local timeSinceLastSwitch = tick() - lastItemSwitch
+	local randomInterval = ITEM_SWITCH_INTERVAL_MIN + (math.random() * (ITEM_SWITCH_INTERVAL_MAX - ITEM_SWITCH_INTERVAL_MIN))
+	if timeSinceLastSwitch >= randomInterval then
+		EquipRandom()
+	end
+	if currentEquippedItem and tick() - lastActivateCheck >= TOOL_ACTIVATE_CHECK_INTERVAL then
+		lastActivateCheck = tick()
+		if math.random() <= TOOL_ACTIVATE_CHANCE then
+			if typeof(currentEquippedItem.Activate) == "function" then
+				pcall(function()
+					currentEquippedItem:Activate()
+				end)
+			end
+		end
+	end
+end
+
+local function HandleSeatedState()
+	if not BEHAVIORS.ENABLE_SEAT_HANDLING then return end
+	local currentTime = tick()
+	if LocalPlayer.Character and LocalPlayer.Character.Humanoid.Sit and currentTime - lastSeatChange > 1 then
+		LocalPlayer.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		task.wait()
+		LocalPlayer.Character.Humanoid.Jump = true
+		lastSeatChange = currentTime
+	end
+end
+
+local function GetNearestPlayer()
+	local currentTime = tick()
+	if currentTarget and currentTime - lastTargetSwitch > TARGET_SWITCH_TIME_MAX then
+		currentTarget = nil
+	end
+	if DEBUG_MODE then
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player.Name == DEBUG_TARGET_PLAYER_NAME and player.Character then
+				local targetHumanoid = player.Character:FindFirstChild("Humanoid")
+				local targetRoot = player.Character:FindFirstChild("HumanoidRootPart")
+
+				if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+					currentTarget = player
+					return currentTarget
+				end
+			end
+		end
+	end
+	local validTargets = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character then
+			local targetHumanoid = player.Character:FindFirstChild("Humanoid")
+			local targetRoot = player.Character:FindFirstChild("HumanoidRootPart")
+
+			if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+				local distance = (targetRoot.Position - targetReferencePart.Position).Magnitude
+				if distance <= LOOK_DETECTION_RADIUS then
+					table.insert(validTargets, {
+						player = player,
+						distance = distance
+					})
+				end
+			end
+		end
+	end
+	if #validTargets > 0 and (not currentTarget or currentTime - lastTargetSwitch >= TARGET_SWITCH_TIME_MIN) then
+		table.sort(validTargets, function(a, b)
+			return a.distance < b.distance
+		end)
+		local selectionPool = math.min(3, #validTargets)
+		if selectionPool > 0 then
+			local selectedIndex = math.random(1, selectionPool)
+			currentTarget = validTargets[selectedIndex].player
+			lastTargetSwitch = currentTime
+			targetSwitchDelay = TARGET_SWITCH_TIME_MIN + (math.random() * (TARGET_SWITCH_TIME_MAX - TARGET_SWITCH_TIME_MIN))
+		end
+	end
+	return currentTarget, currentTarget == nil
+end
+
+local function IsTargetLookingAtMe(target)
+	local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot or not targetReferencePart then return false end
+	local distance = (targetRoot.Position - targetReferencePart.Position).Magnitude
+	if distance > LOOK_DETECTION_RADIUS then 
+		return false 
+	end
+	local toLocal = (targetReferencePart.Position - targetRoot.Position).Unit
+	local targetLook = targetRoot.CFrame.LookVector
+	local angle = math.acos(toLocal:Dot(targetLook))
+	return angle < LOOK_ANGLE_THRESHOLD
+end
+
+local function GetPositionBehindTarget(target)
+	local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then return nil end
+	local targetCFrame = targetRoot.CFrame
+	return targetCFrame.Position - (targetCFrame.LookVector * BACK_DISTANCE)
+end
+
+local function GetPositionInFrontOfTarget(target)
+	local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then return nil end
+	local targetCFrame = targetRoot.CFrame
+	return targetCFrame.Position + (targetCFrame.LookVector * FRONT_DISTANCE)
+end
+
+local function GetRandomPositionInRadius(centerPosition)
+	if not centerPosition then return nil end
+	local angle = math.random() * math.pi
+	local distance = math.random() * RADIUS
+	local offset = Vector3.new(
+		math.cos(angle) * distance,
+		0,
+		math.sin(angle) * distance
+	)
+	return centerPosition + offset
+end
+
+local function GetClosePosition(target)
+	if not target or not target.Character then return nil end
+	local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot or not targetReferencePart then return nil end
+
+	local randomDistance = CLOSE_DISTANCE_MIN + (math.random() * (CLOSE_DISTANCE_MAX - CLOSE_DISTANCE_MIN))
+	local targetPos = targetRoot.Position
+	local myPos = targetReferencePart.Position
+	local direction = (targetPos - myPos).Unit
+	return targetPos - (direction * randomDistance)
+end
+
+local function MoveToPosition(position)
+	if not position or isMoving then return end
+	isMoving = true
+	Humanoid.WalkToPoint = position
+	local startTime = tick()
+	local timeout = 0.05
+	while (HumanoidRootPart.Position - position).Magnitude > 0.5 do
+		if tick() - startTime > timeout then
+			break
+		end
+		task.wait()
+	end
+	isMoving = false
+end
+
+local function StartFrontMovement()
+	if not BEHAVIORS.ENABLE_FRONT_MOVEMENT then return end
+	if isFrontMovementEnabled then return end
+	isFrontMovementEnabled = true
+	isMovingBackward = false
+	task.spawn(function()
+		while isFrontMovementEnabled do
+			local nearestPlayer = GetNearestPlayer()
+			if nearestPlayer and IsTargetLookingAtMe(nearestPlayer) then
+				local frontPosition = GetPositionInFrontOfTarget(nearestPlayer)
+				local targetPosition = GetRandomPositionInRadius(frontPosition)
+				if targetPosition then
+					MoveToPosition(targetPosition)
+				end
+				local closePosition = GetClosePosition(nearestPlayer)
+				if closePosition then
+					MoveToPosition(closePosition)
+				end
+			end
+			task.wait(timeout)
+		end
+	end)
+end
+
+local function StopFrontMovement()
+	isFrontMovementEnabled = false
+end
+
+local function StartBackMovement()
+	if not BEHAVIORS.ENABLE_BACK_MOVEMENT then return end
+	if isMovingBack then return end
+	isMovingBack = true
+	isMovingBackward = true
+	task.spawn(function()
+		while isMovingBack do
+			local nearestPlayer = GetNearestPlayer()
+			if nearestPlayer then
+				local behindPosition = GetPositionBehindTarget(nearestPlayer)
+				local targetPosition = GetRandomPositionInRadius(behindPosition)
+				if targetPosition then
+					MoveToPosition(targetPosition)
+				end
+				local closePosition = GetClosePosition(nearestPlayer)
+				if closePosition then
+					MoveToPosition(closePosition)
+				end
+			end
+			task.wait(timeout)
+		end
+	end)
+end
+
+local function StopBackMovement()
+	isMovingBack = false
+	isMovingBackward = false
+end
+
+local function StopInching()
+	isInchingEnabled = false
+end
+
+local function PerformJump()
+	Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	isJumping = true
+	lastJumpTime = tick()
+	Humanoid.Jump = true
+
+	task.delay(0.1, function()
+		isJumping = false
+	end)
+end
+
+local function PerformInchMovement(target, backwards)
+	if not BEHAVIORS.ENABLE_INCHING then return end
+	if inchingInProgress then return end
+	local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot or not targetReferencePart then return end
+	local currentDistance = (targetRoot.Position - targetReferencePart.Position).Magnitude
+	if backwards then
+		if currentDistance >= BACKWARDS_MINIMUM_DISTANCE then return end
+		local direction = (targetReferencePart.Position - targetRoot.Position).Unit
+		local moveAmount = math.min(BACKWARDS_INCH_AMOUNT, BACKWARDS_MINIMUM_DISTANCE - currentDistance)
+		local newPosition = targetReferencePart.Position + (direction * moveAmount)
+		inchingInProgress = true
+		Humanoid.WalkToPoint = newPosition
+	else
+		if currentDistance <= MINIMUM_DISTANCE_TO_TARGET then 
+			if math.random() <= MINIMUM_DISTANCE_BEHAVIOR.FRONT_MOVEMENT_SWITCH_CHANCE then
+				StopInching()
+				StartFrontMovement()
+			end
+			return 
+		end
+		local direction = (targetRoot.Position - targetReferencePart.Position).Unit
+		local moveAmount = math.min(INCH_AMOUNT, currentDistance - MINIMUM_DISTANCE_TO_TARGET)
+		local newPosition = targetReferencePart.Position + (direction * moveAmount)
+		inchingInProgress = true
+		Humanoid.WalkToPoint = newPosition
+	end
+	local startTime = tick()
+	while (HumanoidRootPart.Position - Humanoid.WalkToPoint).Magnitude > 0.5 do
+		if tick() - startTime > 1 then break end
+		task.wait()
+	end
+	inchingInProgress = false
+	lastInchTime = tick()
+	task.wait(0.1)
+end
+
+local function StartInching(backwards)
+	if not BEHAVIORS.ENABLE_INCHING then return end
+	if isInchingEnabled then return end
+	isInchingEnabled = true
+	local initialWaitTime = INITIAL_WAIT_MIN + (math.random() * (INITIAL_WAIT_MAX - INITIAL_WAIT_MIN))
+	task.wait(initialWaitTime)
+	task.spawn(function()
+		while isInchingEnabled do
+			local nearestPlayer = GetNearestPlayer()
+			if nearestPlayer and IsTargetLookingAtMe(nearestPlayer) then
+				local timeSinceLastInch = tick() - lastInchTime
+				local randomInterval = INCH_INTERVAL_MIN + (math.random() * (INCH_INTERVAL_MAX - INCH_INTERVAL_MIN))
+				if timeSinceLastInch >= randomInterval then
+					PerformInchMovement(nearestPlayer, backwards)
+				end
+			end
+			task.wait(0.1)
+		end
+	end)
+end
+
+local function TrackTargetMovement(target)
+	if not BEHAVIORS.ENABLE_PATTERN_DETECTION then return end
+	if not target or not target.Character then return end
+	local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then return end
+	local currentPosition = targetRoot.Position
+	if lastTargetPosition then
+		local distanceMoved = (currentPosition - lastTargetPosition).Magnitude
+		if distanceMoved and 
+			PATTERN_DETECTION.SMALL_RANGE and 
+			PATTERN_DETECTION.SMALL_RANGE.min and 
+			PATTERN_DETECTION.SMALL_RANGE.max then
+			table.insert(movementHistory, distanceMoved)
+			if #movementHistory > PATTERN_DETECTION.HISTORY_LENGTH then
+				table.remove(movementHistory, 1)
+			end
+			if distanceMoved >= PATTERN_DETECTION.SMALL_RANGE.min and 
+				distanceMoved <= PATTERN_DETECTION.SMALL_RANGE.max then
+				smallRangeCount = (smallRangeCount or 0) + 1
+			elseif distanceMoved >= PATTERN_DETECTION.LARGE_RANGE.min and 
+				distanceMoved <= PATTERN_DETECTION.LARGE_RANGE.max then
+				largeRangeCount = (largeRangeCount or 0) + 1
+			else
+				smallRangeCount = 0
+				largeRangeCount = 0
+			end
+			if (smallRangeCount and smallRangeCount >= PATTERN_DETECTION.THRESHOLD) or 
+				(largeRangeCount and largeRangeCount >= PATTERN_DETECTION.THRESHOLD) then
+				smallRangeCount = 0
+				largeRangeCount = 0
+				StartFrontMovement()
+			end
+		end
+	end
+	lastTargetPosition = currentPosition
+end
+
+local function StopToolAnimation(animator)
+	if not animator then return end
+
+	if BOOMBOX_CONFIG.animationConnection then
+		BOOMBOX_CONFIG.animationConnection:Disconnect()
+		BOOMBOX_CONFIG.animationConnection = nil
+	end
+	if BOOMBOX_CONFIG.animatorConnection then
+		BOOMBOX_CONFIG.animatorConnection:Disconnect()
+		BOOMBOX_CONFIG.animatorConnection = nil
+	end
+	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+		if track.Animation and 
+			(string.match(track.Animation.Name:lower(), "tool") or 
+				string.match(track.Animation.Name:lower(), "item")) then
+			track:Stop()
+			BOOMBOX_CONFIG.toolAnimTrack = track
+		end
+	end
+	BOOMBOX_CONFIG.animatorConnection = animator.AnimationPlayed:Connect(function(track)
+		if track.Animation and 
+			(string.match(track.Animation.Name:lower(), "tool") or 
+				string.match(track.Animation.Name:lower(), "item")) then
+			track:Stop()
+			BOOMBOX_CONFIG.toolAnimTrack = track
+		end
+	end)
+end
+
+local function ResumeToolAnimation(animator)
+	if not animator then return end
+
+	if BOOMBOX_CONFIG.animationConnection then
+		BOOMBOX_CONFIG.animationConnection:Disconnect()
+		BOOMBOX_CONFIG.animationConnection = nil
+	end
+	if BOOMBOX_CONFIG.animatorConnection then
+		BOOMBOX_CONFIG.animatorConnection:Disconnect()
+		BOOMBOX_CONFIG.animatorConnection = nil
+	end
+end
+
+local function UnequipBoomBox()
+	if BOOMBOX_CONFIG.currentBoomBox then
+		local backpack = LocalPlayer:FindFirstChild("Backpack")
+		if backpack then
+			if BOOMBOX_CONFIG.animationConnection then
+				BOOMBOX_CONFIG.animationConnection:Disconnect()
+				BOOMBOX_CONFIG.animationConnection = nil
+			end
+			if BOOMBOX_CONFIG.animatorConnection then
+				BOOMBOX_CONFIG.animatorConnection:Disconnect()
+				BOOMBOX_CONFIG.animatorConnection = nil
+			end
+			if BOOMBOX_CONFIG.toolAnimTrack then
+				BOOMBOX_CONFIG.toolAnimTrack:Stop()
+				BOOMBOX_CONFIG.toolAnimTrack = nil
+			end
+			local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+			if humanoid then
+				local animator = humanoid:FindFirstChild("Animator")
+				if animator then
+					ResumeToolAnimation(animator)
+					for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+						if track.Animation and 
+							(string.match(track.Animation.Name:lower(), "tool") or 
+								string.match(track.Animation.Name:lower(), "item")) then
+							track:Play()
+						end
+					end
+				end
+			end
+			BOOMBOX_CONFIG.currentBoomBox.Parent = backpack
+			BOOMBOX_CONFIG.currentBoomBox = nil
+		end
+	end
+end
+
+local function HandleBoomBox(nearestPlayer)
+	if not BEHAVIORS.ENABLE_BOOMBOX then
+		UnequipBoomBox()
+		return
+	end
+	if tick() - BOOMBOX_CONFIG.lastBoomBoxCheck < BOOMBOX_CONFIG.CHECK_INTERVAL then return end
+	BOOMBOX_CONFIG.lastBoomBoxCheck = tick()
+
+	if not nearestPlayer or not nearestPlayer.Character then 
+		UnequipBoomBox()
+		return
+	end
+	local targetRoot = nearestPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then 
+		UnequipBoomBox()
+		return 
+	end
+	local distance = (targetRoot.Position - targetReferencePart.Position).Magnitude
+	local isValidState = currentBehaviorState == "frontshots" or currentBehaviorState == "backshots"
+	if distance <= BOOMBOX_CONFIG.RADIUS and isValidState then
+		if not BOOMBOX_CONFIG.currentBoomBox then
+			local backpack = LocalPlayer:FindFirstChild("Backpack")
+			if not backpack then return end
+			local boomBox = backpack:FindFirstChild("BoomBox") or backpack:FindFirstChild("Boombox")
+			if boomBox then
+				boomBox.GripPos = BOOMBOX_CONFIG.GRIP_POS
+				local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+				if humanoid then
+					local animator = humanoid:FindFirstChild("Animator")
+					if animator then
+						StopToolAnimation(animator)
+					end
+				end
+				boomBox.Parent = LocalPlayer.Character
+				BOOMBOX_CONFIG.currentBoomBox = boomBox
+				boomBox.Handle.Massless = true
+				task.wait()
+				local remote = boomBox:FindFirstChild("Remote")
+				if remote then
+					remote:FireServer("PlaySong", tonumber(BOOMBOX_CONFIG.SOUND_ID))
+				end
+			end
+		end
+	else
+		UnequipBoomBox()
+	end
+end
+
+local function BillBoardGUI()
+	local billboardGui = Instance.new("BillboardGui")
+	billboardGui.Name = "BehaviorUI"
+	billboardGui.Size = UDim2.new(0, 300, 0, 250)
+	billboardGui.StudsOffset = Vector3.new(0, 0, 0)
+	billboardGui.AlwaysOnTop = true
+	billboardGui.Active = true
+	billboardGui.Parent = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	local head = LocalPlayer.Character:WaitForChild("Head")
+	billboardGui.Adornee = head  
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0.1, 0, 0.1, 0)
+	frame.Position = UDim2.new(0.45, 0, 0.45, 0)
+	frame.BackgroundTransparency = 0.5
+	frame.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+	frame.BorderSizePixel = 0
+	frame.Parent = billboardGui
+	local tabButtonsFrame = Instance.new("Frame")
+	tabButtonsFrame.Size = UDim2.new(1, 0, 0, 30)
+	tabButtonsFrame.BackgroundTransparency = 1
+	tabButtonsFrame.Parent = frame
+	local behaviorsTabButton = Instance.new("TextButton")
+	behaviorsTabButton.Size = UDim2.new(0.5, 0, 1, 0)
+	behaviorsTabButton.Position = UDim2.new(0, 0, 0, 0)
+	behaviorsTabButton.Text = "Behaviors"
+	behaviorsTabButton.TextScaled = true
+	behaviorsTabButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+	behaviorsTabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	behaviorsTabButton.Font = Enum.Font.SourceSans
+	behaviorsTabButton.BorderSizePixel = 0
+	behaviorsTabButton.Parent = tabButtonsFrame
+	local contentFrame = Instance.new("Frame")
+	contentFrame.Size = UDim2.new(1, 0, 1, -30)
+	contentFrame.Position = UDim2.new(0, 0, 0, 30)
+	contentFrame.BackgroundTransparency = 1
+	contentFrame.Parent = frame
+	local behaviorsContent = Instance.new("ScrollingFrame")
+	behaviorsContent.Size = UDim2.new(1, 0, 1, 0)
+	behaviorsContent.BackgroundTransparency = 1
+	behaviorsContent.Visible = true
+	behaviorsContent.Parent = contentFrame
+	behaviorsContent.CanvasSize = UDim2.new(0, 0, 0, 275)
+	behaviorsContent.ScrollBarThickness = 5
+	local debugTabButton = Instance.new("TextButton")
+	debugTabButton.Size = UDim2.new(0.5, 0, 1, 0)
+	debugTabButton.Position = UDim2.new(0.5, 0, 0, 0)
+	debugTabButton.Text = "Debug"
+	debugTabButton.TextScaled = true
+	debugTabButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+	debugTabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	debugTabButton.Font = Enum.Font.SourceSans
+	debugTabButton.BorderSizePixel = 0
+	debugTabButton.Parent = tabButtonsFrame
+	local debugScrollFrame = Instance.new("ScrollingFrame")
+	debugScrollFrame.Size = UDim2.new(1, 0, 1, 0)
+	debugScrollFrame.BackgroundTransparency = 1
+	debugScrollFrame.Visible = false
+	debugScrollFrame.ScrollBarThickness = 5
+	debugScrollFrame.Parent = contentFrame
+	local debugTextLabel = Instance.new("TextLabel")
+	debugTextLabel.Size = UDim2.new(1, -10, 1, 0)
+	debugTextLabel.Position = UDim2.new(0, 5, 0, 0)
+	debugTextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	debugTextLabel.Font = Enum.Font.SourceSans
+	debugTextLabel.TextSize = 20
+	debugTextLabel.TextXAlignment = Enum.TextXAlignment.Left
+	debugTextLabel.TextYAlignment = Enum.TextYAlignment.Top
+	debugTextLabel.TextWrapped = true
+	debugTextLabel.BackgroundTransparency = 1
+	debugTextLabel.Parent = debugScrollFrame
+	local connections = {}
+	local yOffset = 0
+	for behaviorName, enabled in pairs(BEHAVIORS) do
+		local behaviorFrame = Instance.new("Frame")
+		behaviorFrame.Size = UDim2.new(1, -10, 0, 30)
+		behaviorFrame.Position = UDim2.new(0, 5, 0, yOffset)
+		behaviorFrame.BackgroundTransparency = 1
+		behaviorFrame.Parent = behaviorsContent
+		local checkbox = Instance.new("TextButton")
+		checkbox.Size = UDim2.new(0, 30, 1, 0)
+		checkbox.Position = UDim2.new(0, 0, 0, 0)
+		checkbox.Text = ""
+		checkbox.BackgroundColor3 = enabled and Color3.fromRGB(35, 255, 35) or Color3.fromRGB(255, 35, 35)
+		checkbox.BorderSizePixel = 0
+		checkbox.Parent = behaviorFrame
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.new(1, -40, 1, 0)
+		label.Position = UDim2.new(0, 40, 0, 0)
+		label.Text = behaviorName
+		label.TextSize = 20
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.BackgroundTransparency = 1
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.Font = Enum.Font.SourceSans
+		label.Parent = behaviorFrame
+		connections[behaviorName] = checkbox.MouseButton1Click:Connect(function()
+			BEHAVIORS[behaviorName] = not BEHAVIORS[behaviorName]
+			checkbox.BackgroundColor3 = BEHAVIORS[behaviorName] and Color3.fromRGB(35, 255, 35) or Color3.fromRGB(255, 35, 35)
+			if not BEHAVIORS[behaviorName] then
+				if behaviorName == "ENABLE_BACK_MOVEMENT" then
+					StopBackMovement()
+				elseif behaviorName == "ENABLE_FRONT_MOVEMENT" then
+					StopFrontMovement()
+				elseif behaviorName == "ENABLE_INCHING" then
+					StopInching()
+				elseif behaviorName == "ENABLE_ITEM_HANDLING" then
+					UnequipCurrentItem()
+				elseif behaviorName == "ENABLE_BOOMBOX" then
+					UnequipBoomBox()
+				end
+			end
+		end)
+		yOffset = yOffset + 35
+	end
+	behaviorsTabButton.MouseButton1Click:Connect(function()
+		behaviorsContent.Visible = true
+		debugScrollFrame.Visible = false
+		behaviorsTabButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		debugTabButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+	end)
+	debugTabButton.MouseButton1Click:Connect(function()
+		behaviorsContent.Visible = false
+		debugScrollFrame.Visible = true
+		debugTabButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		behaviorsTabButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+	end)
+	behaviorsTabButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	debugTabButton.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+	local animationDuration = 2
+	local startTime = tick()
+	game:GetService("RunService").Heartbeat:Connect(function()
+		local elapsed = tick() - startTime
+		local alpha = math.min(elapsed / animationDuration, 1)
+		local smoothAlpha = alpha * alpha * (3 - 2 * alpha)
+		frame.Size = UDim2.new(
+			0.1 + (0.9 * smoothAlpha), 0,
+			0.1 + (0.9 * smoothAlpha), 0
+		)
+		frame.Position = UDim2.new(
+			0.45 - (0.45 * smoothAlpha), 0,
+			0.45 - (0.45 * smoothAlpha), 0
+		)
+		billboardGui.StudsOffset = Vector3.new(
+			6 * smoothAlpha,
+			3 * smoothAlpha,
+			0
+		)
+		if alpha >= 1 then
+			return false
+		end
+	end)
+	return debugTextLabel, billboardGui
+end
+
+local debugTextLabel, behaviorBillboardGui = BillBoardGUI()
+
+local function UpdateBillboardUI()
+	if debugTextLabel then
+		local behaviorText = string.format(
+			"Behavior State: %s\n" ..
+				"Target: %s\n" ..
+				"moving: %s\n" ..
+				"frontshots: %s\n" ..
+				"backshots: %s\n" ..
+				"being looked at: %s\n" ..
+				"inching: %s\n" ..
+				"item: %s\n" ..
+				"jumping: %s\n" ..
+				"target rig: %s\n",
+			currentBehaviorState,
+			currentTarget and currentTarget.Name or "None",
+			tostring(isMoving),
+			tostring(isFrontMovementEnabled),
+			tostring(isMovingBack),
+			tostring(beingLookedAt),
+			tostring(isInchingEnabled),
+			currentEquippedItem and currentEquippedItem.Name or "None",
+			tostring(isJumping),
+			currentTarget and GetRigType(currentTarget) or "None"
+		)
+		debugTextLabel.Text = behaviorText
+		local textBounds = debugTextLabel.TextBounds
+		debugTextLabel.Parent.CanvasSize = UDim2.new(0, 0, 0, textBounds.Y + 25)
+	end
+end
+
+local function UpdatePlayerMovementHistory(player)
+	if not player.Character then return end
+	local root = player.Character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+	if not playerMovementHistory[player] then
+		playerMovementHistory[player] = {
+			positions = {},
+			directionChanges = 0,
+			lastDirection = nil
+		}
+	end
+	local history = playerMovementHistory[player]
+	local currentPos = root.Position
+	table.insert(history.positions, currentPos)
+	if #history.positions > PATTERN_DETECTION.HISTORY_LENGTH then
+		table.remove(history.positions, 1)
+	end
+	if #history.positions >= 3 then
+		local prev = history.positions[#history.positions - 2]
+		local current = history.positions[#history.positions - 1]
+		local next = history.positions[#history.positions]
+		local prevVector = (current - prev).Unit
+		local nextVector = (next - current).Unit
+		if prevVector:Dot(nextVector) < 0 and 
+			(next - prev).Magnitude > PATTERN_DETECTION.DIRECTION_CHANGE_THRESHOLD then
+			history.directionChanges = history.directionChanges + 1
+		end
+	end
+	if tick() - (history.lastCheck or 0) > PATTERN_DETECTION.CHECK_INTERVAL * PATTERN_DETECTION.HISTORY_LENGTH then
+		history.directionChanges = 0
+	end
+	history.lastCheck = tick()
+end
+
+local function pattern()
+	if tick() - lastPatternCheck < PATTERN_DETECTION.MOVEMENT_CHECK_INTERVAL then return end
+	lastPatternCheck = tick()
+	local nearbyPlayers = {}
+	local mostActivePlayer = nil
+	local highestDirectionChanges = 0
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer and player.Character then
+			local root = player.Character:FindFirstChild("HumanoidRootPart")
+			if root and (root.Position - targetReferencePart.Position).Magnitude <= PATTERN_DETECTION.NEARBY_PLAYER_RADIUS then
+				UpdatePlayerMovementHistory(player)
+				local history = playerMovementHistory[player]
+				if history and history.directionChanges > highestDirectionChanges then
+					highestDirectionChanges = history.directionChanges
+					mostActivePlayer = player
+				end
+				table.insert(nearbyPlayers, player)
+			end
+		end
+	end
+	for _, player in ipairs(nearbyPlayers) do
+		local history = playerMovementHistory[player]
+		if history and history.directionChanges >= PATTERN_DETECTION.PATTERN_THRESHOLD then
+			if currentTarget == player and tick() - lastTargetSwitch > PATTERN_DETECTION.TARGET_SWITCH_DELAY then
+				currentTarget = player
+				lastTargetSwitch = tick()
+				playerMovementHistory = {}
+				return
+			end
+		end
+	end
+end
+
+local function EvaluateBehaviors()
+	local nearestPlayer = GetNearestPlayer()
+	if not nearestPlayer then return end
+	local isBeingLookedAt = IsTargetLookingAtMe(nearestPlayer)
+	if isBeingLookedAt then
+		if math.random() <= IGNORE_GAZE_CHANCE then
+			StopInching()
+			StopFrontMovement()
+			StartBackMovement()
+		else
+			if math.random() <= REACTION_CHANCE then
+				if math.random() <= FRONT_MOVEMENT_CHANCE and BEHAVIORS.ENABLE_FRONT_MOVEMENT then
+					StopInching()
+					StopBackMovement()
+					StartFrontMovement()
+				else
+					StopFrontMovement()
+					StopBackMovement()
+					isReverseBehavior = math.random() <= REVERSE_BEHAVIOR_CHANCE
+					StartInching(isReverseBehavior)
+				end
+			end
+		end
+	else
+		StopInching()
+		StopFrontMovement()
+		StartBackMovement()
+	end
+	local targetRoot = nearestPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if targetRoot then
+		if isBeingLookedAt then
+			if math.random() <= LOOKAT_CHANCE then
+				bodyGyro.CFrame = CFrame.new(HumanoidRootPart.Position, Vector3.new(targetRoot.Position.X, HumanoidRootPart.Position.Y, targetRoot.Position.Z))
+			end
+		else
+			if math.random() <= LOOKAWAY_CHANCE then
+				local awayDir = (HumanoidRootPart.Position - targetRoot.Position).Unit
+				local awayPos = HumanoidRootPart.Position + awayDir
+				bodyGyro.CFrame = CFrame.new(HumanoidRootPart.Position, Vector3.new(awayPos.X, HumanoidRootPart.Position.Y, awayPos.Z))
+			else
+				bodyGyro.CFrame = CFrame.new(HumanoidRootPart.Position, Vector3.new(targetRoot.Position.X, HumanoidRootPart.Position.Y, targetRoot.Position.Z))
+			end
+		end
+	end
+end
+
+local function IsPartOfCharacter(instance)
+	local model = instance:FindFirstAncestorWhichIsA("Model")
+	return model and Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function IsToolOrThang(instance)
+	if instance:IsA("Tool") or instance.Parent:IsA("Tool") then
+		return true
+	end
+	if instance:IsA("Accessory") or instance.Parent:IsA("Accessory") then
+		return true
+	end
+	local accessory = instance:FindFirstAncestorWhichIsA("Accessory")
+	if accessory then
+		return true
+	end
+	return false
+end
+
+local function obstacleCheck()
+	if not HumanoidRootPart or not Humanoid then return end
+	if isJumping or Humanoid.Jump then return end
+	local currentTime = tick()
+	if currentTime - lastJumpTime < RAYCAST_CONFIG.JUMP_COOLDOWN then return end
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = RAYCAST_CONFIG.FILTER_TYPE
+	local filterInstances = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			table.insert(filterInstances, player.Character)
+		end
+	end
+	if LocalPlayer.Character then
+		for _, item in ipairs(LocalPlayer.Character:GetChildren()) do
+			if item:IsA("Tool") or item:IsA("Accessory") then
+				table.insert(filterInstances, item)
+			end
+		end
+	end
+	raycastParams.FilterDescendantsInstances = filterInstances
+	local checks = {
+		{offset = Vector3.new(0, RAYCAST_CONFIG.HEIGHT_OFFSET, 0), distance = RAYCAST_CONFIG.DISTANCE},
+		{offset = Vector3.new(-0.5, RAYCAST_CONFIG.HEIGHT_OFFSET, 0), distance = RAYCAST_CONFIG.DISTANCE},
+		{offset = Vector3.new(0.5, RAYCAST_CONFIG.HEIGHT_OFFSET, 0), distance = RAYCAST_CONFIG.DISTANCE}
+	}
+	for _, check in ipairs(checks) do
+		local startPos = HumanoidRootPart.Position + check.offset
+		local lookVector = HumanoidRootPart.CFrame.LookVector
+		local endPos = startPos + (lookVector * check.distance)
+		local result = workspace:Raycast(startPos, endPos - startPos, raycastParams)
+
+		if result then
+			local hitPart = result.Instance
+			if not IsPartOfCharacter(hitPart) and not IsToolOrThang(hitPart) then
+				PerformJump()
+				return
+			end
+		end
+	end
+	if currentTime - STUCK_DETECTION.LAST_CHECK_TIME >= STUCK_DETECTION.CHECK_INTERVAL then
+		STUCK_DETECTION.LAST_CHECK_TIME = currentTime
+		if Humanoid.MoveDirection.Magnitude > 0 and not beingLookedAt then
+			local currentPosition = HumanoidRootPart.Position
+			if STUCK_DETECTION.LAST_POSITION then
+				local movement = (currentPosition - STUCK_DETECTION.LAST_POSITION).Magnitude
+				if movement < STUCK_DETECTION.VELOCITY_THRESHOLD then
+					if not STUCK_DETECTION.IS_STUCK then
+						STUCK_DETECTION.IS_STUCK = true
+						STUCK_DETECTION.STUCK_START_TIME = currentTime
+					elseif currentTime - STUCK_DETECTION.STUCK_START_TIME >= STUCK_DETECTION.STUCK_DURATION and
+						currentTime - STUCK_DETECTION.LAST_FORCED_JUMP >= STUCK_DETECTION.JUMP_COOLDOWN then
+						PerformJump()
+						STUCK_DETECTION.LAST_FORCED_JUMP = currentTime
+					end
+				else
+					STUCK_DETECTION.IS_STUCK = false
+				end
+			end
+			STUCK_DETECTION.LAST_POSITION = currentPosition
+		else
+			STUCK_DETECTION.IS_STUCK = false
+		end
+	end
+end
+
+RunService.Heartbeat:Connect(function()
+	if not Humanoid or Humanoid.Health <= 0 then return end
+	if targetReferencePart and HumanoidRootPart then
+		targetReferencePart.Position = HumanoidRootPart.Position
+	end
+	if Humanoid.MoveDirection.Magnitude > 0 then
+		obstacleCheck()
+	else
+		STUCK_DETECTION.IS_STUCK = false
+		STUCK_DETECTION.LAST_POSITION = nil
+	end
+	UpdateBillboardUI()
+	HandleSeatedState()
+	if BEHAVIORS.ENABLE_PATTERN_DETECTION then
+		pattern()
+	end
+	local nearestPlayer = GetNearestPlayer()
+	if not nearestPlayer then 
+		if currentBehaviorState ~= "idle" then
+			currentBehaviorState = "idle"
+		end
+		bodyGyro.CFrame = HumanoidRootPart.CFrame
+		StopInching()
+		StopFrontMovement()
+		StopBackMovement()
+		UnequipCurrentItem()
+		UnequipBoomBox()
+		return 
+	end
+	if BEHAVIORS.ENABLE_BOOMBOX then
+		HandleBoomBox(nearestPlayer)
+	end
+
+	if tick() - lastMovementCheck >= PATTERN_DETECTION.MOVEMENT_CHECK_INTERVAL then
+		TrackTargetMovement(nearestPlayer)
+		lastMovementCheck = tick()
+	end
+	local targetRoot = nearestPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if not targetRoot then return end
+	local isBeingLookedAt = IsTargetLookingAtMe(nearestPlayer)
+	if isBeingLookedAt then
+		if not beingLookedAt then
+			beingLookedAt = true
+			EvaluateBehaviors()
+		end
+		ItemHandler()
+		if isFrontMovementEnabled then
+			if currentBehaviorState ~= "frontshots" then
+				currentBehaviorState = "frontshots"
+			end
+			local awayDir = (HumanoidRootPart.Position - targetRoot.Position).Unit
+			local awayPos = HumanoidRootPart.Position + awayDir
+			bodyGyro.CFrame = CFrame.new(HumanoidRootPart.Position, Vector3.new(awayPos.X, HumanoidRootPart.Position.Y, awayPos.Z))
+		elseif isReverseBehavior then
+			if currentBehaviorState ~= "reversing" then
+				currentBehaviorState = "reversing"
+			end
+			bodyGyro.CFrame = CFrame.new(HumanoidRootPart.Position, Vector3.new(targetRoot.Position.X, HumanoidRootPart.Position.Y, targetRoot.Position.Z))
+		else
+			if currentBehaviorState ~= "looking away" then
+				currentBehaviorState = "looking away"
+			end
+			local awayDir = (HumanoidRootPart.Position - targetRoot.Position).Unit
+			local awayPos = HumanoidRootPart.Position + awayDir
+			bodyGyro.CFrame = CFrame.new(HumanoidRootPart.Position, Vector3.new(awayPos.X, HumanoidRootPart.Position.Y, awayPos.Z))
+		end
+	else
+		if beingLookedAt then
+			beingLookedAt = false
+			isReverseBehavior = false
+			StopInching()
+			StopFrontMovement()
+			StopBackMovement()
+			UnequipCurrentItem()
+		end
+		if currentBehaviorState ~= "backshots" then
+			currentBehaviorState = "backshots"
+		end
+		bodyGyro.CFrame = CFrame.new(HumanoidRootPart.Position, Vector3.new(targetRoot.Position.X, HumanoidRootPart.Position.Y, targetRoot.Position.Z))
+		if not (isMoving or inchingInProgress) then
+			StartBackMovement()
+		end
+	end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+	repeat
+		task.wait()
+	until newCharacter:FindFirstChild("HumanoidRootPart")
+	Character, Humanoid, HumanoidRootPart = GetCharacterComponents()
+	bodyGyro:Destroy()
+	bodyGyro = Instance.new("BodyGyro")
+	bodyGyro.MaxTorque = Vector3.new(0, math.huge, 0)
+	bodyGyro.P = 10000
+	bodyGyro.D = 100
+	bodyGyro.Parent = HumanoidRootPart
+	if targetReferencePart then
+		targetReferencePart:Destroy()
+		targetReferencePart = nil
+	end
+	isMovingBack = true
+	isMoving = false
+	beingLookedAt = false
+	isInchingEnabled = false
+	isFrontMovementEnabled = false
+	inchingInProgress = false
+	currentEquippedItem = nil
+	lastItemSwitch = 0
+	isReverseBehavior = false
+	movementHistory = {}
+	smallRangeCount = 0
+	largeRangeCount = 0
+	lastTargetPosition = nil
+	lastJumpAttempt = 0
+	jumpAttemptsCount = 0
+	currentTarget = nil
+	lastJumpTime = 0
+	isJumping = false
+	debugTextLabel, behaviorBillboardGui = BillBoardGUI()
+end)
