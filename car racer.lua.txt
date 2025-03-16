@@ -1,0 +1,341 @@
+local osclock=os.clock
+local tspawn=task.spawn
+local twait=task.wait
+local sin=math.sin
+local cos=math.cos
+local abs=math.abs
+local min=math.min
+local clamp=math.clamp
+local mrandom=math.random
+local next=next
+local pcall=pcall
+local type=type
+local typeof=typeof
+
+local i=Instance.new 
+local v2=Vector2.new 
+local v3=Vector3.new
+local cf=CFrame.new
+local cfl=CFrame.lookAt
+local angles=CFrame.fromEulerAngles
+local e=Enum 
+
+local v3_0=v3()
+
+local plrs=game:FindFirstChildOfClass("Players")
+local rus=game:FindFirstChildOfClass("RunService")
+local ws=game:FindFirstChildOfClass("Workspace")
+local uis=game:FindFirstChildOfClass("UserInputService")
+local lp=plrs.LocalPlayer
+local char=lp.Character or lp.CharacterAdded:Wait()
+local hum=char:WaitForChild("Humanoid")
+local hrp=char:WaitForChild("HumanoidRootPart")
+
+local heartbeat=rus.Heartbeat
+local stepped=rus.Stepped
+local renderstepped=rus.RenderStepped
+local GetMouseLocation=uis.GetMouseLocation
+local GetFocusedTextBox=uis.GetFocusedTextBox
+local IsKeyDown=uis.IsKeyDown
+
+local height=-6.75 --adjust this to make yourself up/down
+local isFlying=false
+local moveDir=v3()
+local FLY_KEY=e.KeyCode.T
+local HOVER_TILT_ANGLE=20
+local POSITION_GAIN=15
+local NORMAL=8
+local BOOST=25
+local cloneChar=nil
+local cloneHum=nil
+local playerAtt=nil
+local worldAtt=nil
+local playerAlignOri=nil
+local playerLinVel=nil
+local steppedConnection=nil
+
+local function getCamLook()
+	local cam=ws.CurrentCamera
+	local look=cam.CFrame.LookVector
+	return v3(look.X,0,look.Z).Unit
+end
+
+local function getCamRight()
+	local cam=ws.CurrentCamera
+	local right=cam.CFrame.RightVector
+	return v3(right.X,0,right.Z).Unit
+end
+
+local function getMoveDir()
+	local dir=v3_0
+	if IsKeyDown(uis,e.KeyCode.W) then
+		dir=dir+getCamLook()
+	end
+	if IsKeyDown(uis,e.KeyCode.S) then
+		dir=dir-getCamLook()
+	end
+	if IsKeyDown(uis,e.KeyCode.A) then
+		dir=dir-getCamRight()
+	end
+	if IsKeyDown(uis,e.KeyCode.D) then
+		dir=dir+getCamRight()
+	end
+	return dir.Magnitude>0 and dir.Unit or dir
+end
+
+local function setCol(character,canCollide)
+	if not character or not character.Parent then return end
+	if character:FindFirstChild("Torso") then
+		character.Torso.CanCollide=canCollide
+		character.Head.CanCollide=canCollide
+		if character:FindFirstChild("Left Arm") then
+			character["Left Arm"].CanCollide=canCollide
+		end
+		if character:FindFirstChild("Right Arm") then
+			character["Right Arm"].CanCollide=canCollide
+		end
+		if character:FindFirstChild("Left Leg") then
+			character["Left Leg"].CanCollide=canCollide
+		end
+		if character:FindFirstChild("Right Leg") then
+			character["Right Leg"].CanCollide=canCollide
+		end
+	else
+		if character:FindFirstChild("UpperTorso") then
+			character.UpperTorso.CanCollide=canCollide
+		end
+		if character:FindFirstChild("LowerTorso") then
+			character.LowerTorso.CanCollide=canCollide
+		end
+		if character:FindFirstChild("Head") then
+			character.Head.CanCollide=canCollide
+		end
+		for _,part in pairs(character:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.CanCollide=canCollide
+			end
+		end
+	end
+end
+
+local onInputBegan=function(input,gp)
+	if gp then return end
+	if input.KeyCode==FLY_KEY then
+		if not char or not char.Parent or not char:FindFirstChild("HumanoidRootPart") then
+			print("how")
+			return
+		end
+		isFlying=not isFlying
+		if isFlying then
+			local archivableStates={}
+			for _,obj in pairs(char:GetDescendants()) do
+				if obj:IsA("Instance") then
+					archivableStates[obj]=obj.Archivable
+					obj.Archivable=true
+				end
+			end
+			archivableStates[char]=char.Archivable
+			char.Archivable=true
+			cloneChar=char:Clone()
+			if not cloneChar then
+				for obj,state in pairs(archivableStates) do
+					obj.Archivable=state
+				end
+				return
+			end
+			for _,part in pairs(cloneChar:GetDescendants()) do
+				if part:IsA("BasePart") or part:IsA("Decal") or part:IsA("Texture") then
+					part.Transparency=1
+				elseif part:IsA("Accessory") then
+					local handle=part:FindFirstChild("Handle")
+					if handle then
+						handle.Transparency=1
+					end
+				end
+			end
+			for obj,state in pairs(archivableStates) do
+				obj.Archivable=state
+			end
+			cloneChar.Name="char"
+			cloneChar.Parent=ws
+			cloneChar:SetPrimaryPartCFrame(hrp.CFrame)
+			if not cloneChar.PrimaryPart then
+				cloneChar.PrimaryPart=cloneChar:WaitForChild("HumanoidRootPart")
+			end
+			cloneHum=cloneChar:WaitForChild("Humanoid")
+			cloneHum.WalkSpeed=NORMAL
+			setCol(char,false)
+			if steppedConnection then
+				steppedConnection:Disconnect()
+			end
+			steppedConnection=stepped:Connect(function()
+				if char and char.Parent then
+					setCol(char,false)
+				end
+			end)
+			hum.PlatformStand=true
+			local randomHandle=nil
+			local accessories={}
+			for _,accessory in pairs(cloneChar:GetChildren()) do
+				if accessory:IsA("Accessory") and accessory:FindFirstChild("Handle") then
+					local hatAttachment=accessory:FindFirstChildWhichIsA("Attachment")
+					if hatAttachment and hatAttachment.Name=="HatAttachment" then
+						table.insert(accessories,accessory.Handle)
+					end
+				end
+			end
+			if #accessories>0 then
+				randomHandle=accessories[mrandom(1,#accessories)]
+			end
+			ws.CurrentCamera.CameraSubject=randomHandle or cloneHum
+			playerAtt=i("Attachment")
+			playerAtt.Name="PlayerFlightAttachment"
+			playerAtt.Parent=hrp
+			worldAtt=i("Attachment")
+			worldAtt.Name="WorldOrientAttachment"
+			worldAtt.Parent=ws.Terrain
+			playerAlignOri=i("AlignOrientation")
+			playerAlignOri.Name="PlayerFlightOrientation"
+			playerAlignOri.Responsiveness=10
+			playerAlignOri.RigidityEnabled=false
+			playerAlignOri.Attachment0=playerAtt
+			playerAlignOri.Attachment1=worldAtt
+			playerAlignOri.Enabled=true
+			playerAlignOri.Parent=playerAtt
+			playerLinVel=i("LinearVelocity")
+			playerLinVel.Name="PlayerFlightVelocity"
+			playerLinVel.Attachment0=playerAtt
+			playerLinVel.VelocityConstraintMode=e.VelocityConstraintMode.Vector
+			playerLinVel.MaxForce=math.huge
+			playerLinVel.VectorVelocity=v3(0,0,0)
+			playerLinVel.Enabled=true
+			playerLinVel.Parent=playerAtt
+		else
+			if steppedConnection then
+				steppedConnection:Disconnect()
+				steppedConnection=nil
+			end
+			ws.CurrentCamera.CameraSubject=hum
+			if cloneChar then
+				cloneChar:Destroy()
+				cloneChar=nil
+				cloneHum=nil
+			end
+			setCol(char,true)
+			hum.PlatformStand=false
+			hum:ChangeState(e.HumanoidStateType.GettingUp)
+			if playerAlignOri then
+				playerAlignOri:Destroy()
+				playerAlignOri=nil
+			end
+			if playerLinVel then
+				playerLinVel:Destroy()
+				playerLinVel=nil
+			end
+			if playerAtt then
+				playerAtt:Destroy()
+				playerAtt=nil
+			end
+			if worldAtt then
+				worldAtt:Destroy()
+				worldAtt=nil
+			end
+		end
+	elseif isFlying and input.KeyCode==e.KeyCode.Space then
+		if cloneHum then
+			cloneHum.Jump=true
+		end
+	end
+end
+
+local updateFlight=function(dt)
+	if not isFlying then return end
+	moveDir=getMoveDir()
+	if cloneHum then
+		cloneHum:Move(moveDir)
+	end
+	if cloneChar and cloneChar.PrimaryPart and playerLinVel then
+		local targetPos=cloneChar.PrimaryPart.Position+v3(0,height,0)
+		local displacement=targetPos-hrp.Position
+		local velocity=displacement*POSITION_GAIN
+		playerLinVel.VectorVelocity=velocity
+	end
+	if playerAlignOri and worldAtt then
+		local flatLook=getCamLook()
+		local flatRight=getCamRight()
+		local targCF
+		if moveDir.Magnitude>0.5 then
+			local flatDir=v3(moveDir.X,0,moveDir.Z).Unit
+			local look=cfl(v3_0,flatLook)
+			local fwdTiltDir=flatDir:Dot(flatLook)
+			local fwdTiltAngle=-math.rad(HOVER_TILT_ANGLE)*math.clamp(fwdTiltDir,-.5,.5)
+			local fwdTilt=angles(fwdTiltAngle,0,0)
+			local rightTiltDir=flatDir:Dot(flatRight)
+			local rightTiltAngle=-math.rad(HOVER_TILT_ANGLE)*math.clamp(rightTiltDir,-1,1)
+			local rightTilt=angles(0,0,rightTiltAngle)
+			targCF=look*fwdTilt*rightTilt
+		else
+			targCF=cfl(v3_0,flatLook)
+		end
+		worldAtt.CFrame=targCF
+	end
+end
+
+local updateWalkSpeed=function()
+	if isFlying and cloneHum then
+		if IsKeyDown(uis,e.KeyCode.LeftShift) or IsKeyDown(uis,e.KeyCode.RightShift) then
+			cloneHum.WalkSpeed=BOOST
+		else
+			cloneHum.WalkSpeed=NORMAL
+		end
+	end
+end
+
+uis.InputBegan:Connect(onInputBegan)
+heartbeat:Connect(updateFlight)
+
+uis.InputBegan:Connect(function(input,gp)
+	if gp then return end
+	if input.KeyCode==e.KeyCode.LeftShift or input.KeyCode==e.KeyCode.RightShift then
+		updateWalkSpeed()
+	end
+end)
+
+uis.InputEnded:Connect(function(input,gp)
+	if gp then return end
+	if input.KeyCode==e.KeyCode.LeftShift or input.KeyCode==e.KeyCode.RightShift then
+		updateWalkSpeed()
+	end
+end)
+
+lp.CharacterAdded:Connect(function(newChar)
+	char=newChar
+	hum=char:WaitForChild("Humanoid")
+	hrp=char:WaitForChild("HumanoidRootPart")
+	isFlying=false
+	if cloneChar then
+		cloneChar:Destroy()
+		cloneChar=nil
+		cloneHum=nil
+	end
+	if playerAlignOri then
+		playerAlignOri:Destroy()
+		playerAlignOri=nil
+	end
+	if playerLinVel then
+		playerLinVel:Destroy()
+		playerLinVel=nil
+	end
+	if playerAtt then
+		playerAtt:Destroy()
+		playerAtt=nil
+	end
+	if worldAtt then
+		worldAtt:Destroy()
+		worldAtt=nil
+	end
+	if steppedConnection then
+		steppedConnection:Disconnect()
+		steppedConnection=nil
+	end
+end)
