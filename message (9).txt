@@ -2116,7 +2116,7 @@ btn("creepy crawler",function()
 	})
 end)
 
-btn("Noli Finale", function()
+btn("inale", function()
 	local t=reanimate()
 	if type(t)~="table" then return end
 	local raycastlegs=t.raycastlegs
