@@ -2116,7 +2116,7 @@ btn("creepy crawler",function()
 	})
 end)
 
-btn("nameless animations V8", function()
+btn("Noli Finale", function()
 	local t=reanimate()
 	if type(t)~="table" then return end
 	local raycastlegs=t.raycastlegs
@@ -2131,6 +2131,10 @@ btn("nameless animations V8", function()
 	local RightHip=getJoint("Right Hip")
 	local LeftHip=getJoint("Left Hip")
 	local Neck=getJoint("Neck")
+        local getAccWeldFromMesh=t.getAccWeldFromMesh
+        local CrownWeld=getAccWeldFromMesh("79077120747221","76387283601457")
+        local StarWeld=getAccWeldFromMesh("132319125528511","127670567106689")
+
 
 	addmode("default", {
 		idle = function()
@@ -2138,13 +2142,7 @@ btn("nameless animations V8", function()
 
 			local Ychg=velYchg()/20
 
-			LeftShoulder.C0=Lerp(LeftShoulder.C0,cfMul(cf(-1,0.5+0.1*sin((sine - 1)*1.3),0.05 * sin((sine-0.3)*1.3)),angles(0.5235987755982988+0.08726646259971647*sin(sine*1),-1.4835298641951802+0.10471975511965978*sin(sine*1.3),0.5235987755982988)),deltaTime) 
-			RightShoulder.C0=Lerp(RightShoulder.C0,cfMul(cf(1,0.5+0.1*sin((sine - 1)*1.3),0.05 * sin((sine-0.3)*1.3)),angles(0.5235987755982988+0.08726646259971647*sin(sine*1),1.4835298641951802-0.10471975511965978*sin(sine*1.3),-0.5235987755982988)),deltaTime) 
-			LeftHip.C0=Lerp(LeftHip.C0,cfMul(cf(-1,-1.09-0.1*sin(sine*1.3)+lY-Ychg,lY*-0.5),angles(-0.026179938779914945*sin(sine*1.3),-1.3962634015954636,0)),deltaTime) 
-			RightHip.C0=Lerp(RightHip.C0,cfMul(cf(1,-1.09-0.1*sin(sine*1.3)+rY-Ychg,rY*-0.5),angles(-0.026179938779914945*sin(sine*1.3),1.3962634015954636,0)),deltaTime) 
-			RootJoint.C0=Lerp(RootJoint.C0,cfMul(cf(0,0.09+0.1*sin(sine*1.3) + Ychg,0.025 * sin(sine*1.3)),angles(-1.5707963267948966+0.026179938779914945*sin(sine*1.3),0,3.141592653589793)),deltaTime) 
-			Neck.C0=Lerp(Neck.C0,cfMul(cf(0,1,0),angles(-1.53588974175501-0.026179938779914945*sin((sine+1)*1.3),0.05235987755982989*sin((sine-0.6)*0.65),3.141592653589793)),deltaTime) 
-			--MW_animatorProgressSave: LeftArm,-1,0,0,1,30,5,0,1,0.5,0.1,-1,1.3,-85,6,0,1.3,0,0.05,-0.3,1.3,30,0,0,1,RightArm,1,0,0,1,30,5,0,1,0.5,0.1,-1,1.3,85,-6,0,1.3,0,0.05,-0.3,1.3,-30,0,0,1,LeftLeg,-1,0,0,1,-0,-1.5,0,1.3,-1.09,-0.1,0,1.3,-80,0,0,1,0,0,0,1,0,0,0,1,CPlusPlusTextbook_Handle,8.658389560878277e-09,0,0,1,0,0,0,1,-0.25,0,0,1,0,0,0,1,-0.0002722442150115967,0,0,1,0,0,0,1,RightLeg,1,0,0,1,0,-1.5,0,1.3,-1.09,-0.1,0,1.3,80,0,0,1,0,0,0,1,0,0,0,1,Torso,0,0,0,1,-90,1.5,0,1.3,0.09,0.1,0,1.3,-0,0,0,1,0,0.025,0,1.3,180,0,0,1,Head,0,0,0,1,-88,-1.5,1,1.3,1,0,0,1,-0,3,-0.6,0.65,0,0,0,1,180,0,0,1
+			AccessoryWeld.C0=Lerp(AccessoryWeld.C0,cfMul(cf(-1.7,-2-0.5*sin(sine*1),0.5),angles(0,-0.15707963267948966,0)),deltaTime)  RightHip.C0=Lerp(RightHip.C0,cfMul(cf(1,-1,-0.3),angles(0,1.3962634015954636,0)),deltaTime)  RightShoulder.C0=Lerp(RightShoulder.C0,cfMul(cf(1,0,0),angles(1.7453292519943295+0.17453292519943295*sin(sine*1),1.5707963267948966,0)),deltaTime)  AccessoryWeld.C0=Lerp(AccessoryWeld.C0,cfMul(cf(-0.55+0.1*sin(sine*1),-1,-0.3),angles(-0.6981317007977318,0.017453292519943295,0.5235987755982988)),deltaTime)  Neck.C0=Lerp(Neck.C0,cfMul(cf(0,1,0),angles(-1.6580627893946132,0.017453292519943295-0.05235987755982989*sin(sine*1),3.6651914291880923)),deltaTime)  LeftShoulder.C0=Lerp(LeftShoulder.C0,cfMul(cf(-1+0.02*sin(sine*1),0.2,0.2),angles(0.017453292519943295+0.017453292519943295*sin(sine*1),-1.3962634015954636,0)),deltaTime)  RootJoint.C0=Lerp(RootJoint.C0,cfMul(cf(0,0.05 * sin(sine*1),0),angles(-1.5707963267948966,0.017453292519943295*sin(sine*1),2.6179938779914944)),deltaTime)  LeftHip.C0=Lerp(LeftHip.C0,cfMul(cf(-1.2,-1,0),angles(0,-1.0471975511965976,0.17453292519943295)),deltaTime)  --MW_animatorProgressSave: Accessory(BigChestStarMarking)_Handle,-1.7,0,0,1,,0,0,1,-2,-0.5,0,1,-9,0,0,1,0.5,0,0,1,0,0,0,1,RightLeg,1,0,0,1,0,0,0,1,-1,0,0,1,80,0,0,1,-0.3,0,0,1,0,0,0,1,RightArm,1,0,0,1,100,10,0,1,,0,,1,90,,0,1,0,0,0,1,,0,0,1,Accessory(defaultAccessory)_Handle,-0.55,0.1,0,1,-40,0,0,1,-1,0,0,1,1,0,0,1,-0.3,0,0,1,30,0,0,1,Head,0,0,0,1,-95,0,0,1,1,0,0,1,1,-3,0,1,0,0,0,1,210,0,0,1,LeftArm,-1,0.02,0,1,1,1,0,1,0.2,0,0,1,-80,0,0,1,0.2,0,0,1,0,0,0,1,Torso,0,0,0,1,-90,0,0,1,0,0.05,0,1,0,1,0,1,0,0,0,1,150,0,0,1,LeftLeg,-1.2,0,0,1,0,0,0,1,-1,0,0,1,-60,0,0,1,0,0,0,1,10,0,0,1.
 		end,
 		walk = function()
 			local Vfw, Vrt = velbycfrvec()
