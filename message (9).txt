@@ -2133,6 +2133,7 @@ btn("inale", function()
 	local Neck=getJoint("Neck")
         local getAccWeldFromMesh=t.getAccWeldFromMesh
         local CrownWeld=getAccWeldFromMesh("79077120747221","76387283601457")
+        local MaskWeld=getAccWeldFromMesh("113633578610607","86929859112150")
         local StarWeld=getAccWeldFromMesh("132319125528511","127670567106689")
 
 
