@@ -1,0 +1,605 @@
+-- Backstabber — Finalized (velocity-based motion sounds + cooldown + silence during freeze)
+-- Full LocalScript (client). Replace your existing script with this.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+-- Optional custom font ID (leave nil to use Enum.Font.Code)
+local customFontId = nil
+local function applyFont(guiObject)
+    if customFontId then
+        local ok, fontFace = pcall(function() return Font.fromId(customFontId) end)
+        if ok and fontFace then
+            guiObject.FontFace = fontFace
+            return
+        end
+    end
+    guiObject.Font = Enum.Font.Code
+end
+
+-- Tool
+local tool = Instance.new("Tool")
+tool.Name = "Backstabber"
+tool.RequiresHandle = false
+tool.Parent = LocalPlayer.Backpack
+
+-- State
+local following = false
+local targetPlayer = nil
+local followConnection = nil
+local buildConnection = nil
+local freezeFollowConnection = nil
+local touchConnection = nil
+local motionRandomConnection = nil
+
+local speed = 2
+local flowActive = false
+local freezePhaseActive = false -- true during the freeze-lock (no sounds)
+local percent = 0
+
+-- Timings & thresholds
+local buildDuration = 8
+local flowDuration = 5
+local freezeDuration = 3
+local voidThreshold = -100
+local voidFreezeActive = false
+local lastSafeCFrame = nil
+local voidFreezeConnection = nil
+
+-- Touch detection settings
+local touchThreshold = 2        -- studs distance considered "touching"
+local wasTouching = false       -- edge-detect
+local lastTouchTime = 0
+local touchCooldown = 0.5       -- seconds between allowed repeat noises
+
+-- Motion sound controls (final tuning)
+local motionLastPlay = 0
+local motionCooldown = 0.6      -- minimum seconds between motion noises (tweakable)
+-- motion chance: baseChance + speedFactor * chanceScale
+local motionBaseChance = 0.03   -- 3% base per eligible check
+local motionChanceScale = 0.12  -- additional up to ~12% depending on speed
+
+-- Sound asset lists
+local repeatingNoises = {
+    "rbxassetid://8142423452",
+    "rbxassetid://9120980163",
+    "rbxassetid://6916371803",
+    "rbxassetid://9120627646",
+    "rbxassetid://836797474",
+    "rbxassetid://92030102452230"
+}
+
+local motionNoises = {
+    "rbxassetid://4792915329",
+    "rbxassetid://4792884617",
+    "rbxassetid://4792899013",
+    "rbxassetid://4792904673",
+    "rbxassetid://4792901644"
+}
+
+-- Utility to spawn a transient sound on HRP (allows overlap; PlaybackSpeed = 1)
+local function spawnTransientSound(soundId, looped, volume, parentPart)
+    local char = LocalPlayer.Character
+    if not parentPart then
+        parentPart = char and char:FindFirstChild("HumanoidRootPart")
+    end
+    if not parentPart then return nil end
+
+    local s = Instance.new("Sound")
+    s.SoundId = soundId
+    s.Looped = looped or false
+    s.Volume = volume or 1
+    s.PlaybackSpeed = 1 -- normal speed as requested
+    s.Parent = parentPart
+
+    local ok, _ = pcall(function() s:Play() end)
+    if not ok then
+        pcall(function() s:Destroy() end)
+        return nil
+    end
+
+    if not s.Looped then
+        s.Ended:Connect(function()
+            if s and s.Parent then pcall(function() s:Destroy() end) end
+        end)
+        -- fallback cleanup in case Ended isn't fired
+        delay(8, function()
+            if s and s.Parent then pcall(function() s:Destroy() end) end
+        end)
+    end
+
+    return s
+end
+
+local function playRepeatNoise()
+    local pick = repeatingNoises[math.random(1, #repeatingNoises)]
+    spawnTransientSound(pick, false, 1)
+end
+
+local function playMotionNoise()
+    local pick = motionNoises[math.random(1, #motionNoises)]
+    spawnTransientSound(pick, false, 1)
+end
+
+-- GUI
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BackstabberGUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local controlFrame = Instance.new("Frame")
+controlFrame.Size = UDim2.new(0, 140, 0, 120)
+controlFrame.Position = UDim2.new(0, 10, 0.3, 0)
+controlFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+controlFrame.BackgroundTransparency = 0.15
+controlFrame.BorderSizePixel = 0
+controlFrame.Active = true
+controlFrame.Draggable = true
+controlFrame.Parent = screenGui
+controlFrame.Visible = false
+
+local stopButton = Instance.new("TextButton")
+stopButton.Size = UDim2.new(1, -12, 0, 28)
+stopButton.Position = UDim2.new(0, 6, 0, 6)
+stopButton.Text = "Stop"
+stopButton.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+stopButton.BackgroundTransparency = 0.2
+stopButton.TextColor3 = Color3.new(1,1,1)
+stopButton.BorderSizePixel = 0
+stopButton.Parent = controlFrame
+applyFont(stopButton)
+stopButton.TextSize = 16
+
+local sliderLabel = Instance.new("TextLabel")
+sliderLabel.Size = UDim2.new(1, -12, 0, 18)
+sliderLabel.Position = UDim2.new(0, 6, 0, 40)
+sliderLabel.BackgroundTransparency = 1
+sliderLabel.Text = "Speed (0.5 - 10):"
+sliderLabel.TextColor3 = Color3.new(1,1,1)
+sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+sliderLabel.Parent = controlFrame
+applyFont(sliderLabel)
+sliderLabel.TextSize = 14
+
+local speedBox = Instance.new("TextBox")
+speedBox.Size = UDim2.new(1, -12, 0, 26)
+speedBox.Position = UDim2.new(0, 6, 0, 62)
+speedBox.BackgroundColor3 = Color3.fromRGB(15,15,15)
+speedBox.BackgroundTransparency = 0.2
+speedBox.Text = tostring(speed)
+speedBox.TextColor3 = Color3.new(1,1,1)
+speedBox.ClearTextOnFocus = false
+speedBox.Parent = controlFrame
+applyFont(speedBox)
+speedBox.TextSize = 16
+
+local barFrame = Instance.new("Frame")
+barFrame.Size = UDim2.new(0.6, 0, 0, 26)
+barFrame.Position = UDim2.new(0.2, 0, 1, -46)
+barFrame.BackgroundColor3 = Color3.new(0,0,0)
+barFrame.BackgroundTransparency = 0.15
+barFrame.BorderSizePixel = 0
+barFrame.Parent = screenGui
+barFrame.Visible = false
+
+local barFill = Instance.new("Frame")
+barFill.Size = UDim2.new(0, 0, 1, 0)
+barFill.BackgroundColor3 = Color3.new(1,1,1)
+barFill.BorderSizePixel = 0
+barFill.Parent = barFrame
+
+local percentLabel = Instance.new("TextLabel")
+percentLabel.Size = UDim2.new(0, 80, 1, 0)
+percentLabel.Position = UDim2.new(1, 6, 0, 0)
+percentLabel.BackgroundTransparency = 1
+percentLabel.Text = "0%"
+percentLabel.TextColor3 = Color3.new(1,1,1)
+percentLabel.Parent = barFrame
+applyFont(percentLabel)
+percentLabel.TextSize = 16
+
+local flowButton = Instance.new("TextButton")
+flowButton.Size = UDim2.new(0, 70, 0, 24)
+flowButton.Position = UDim2.new(0.5, -35, 1, -80)
+flowButton.Text = "FLOW"
+flowButton.BackgroundTransparency = 1
+flowButton.TextColor3 = Color3.new(1,1,1)
+flowButton.BorderSizePixel = 0
+flowButton.Parent = screenGui
+applyFont(flowButton)
+flowButton.TextSize = 14
+flowButton.Visible = false
+
+-- Utility: behind CFrame
+local function getBehindCFrame(targetHumanoidRootPart)
+    return targetHumanoidRootPart.CFrame * CFrame.new(0, 0, 2)
+end
+
+local function updateGUIVisibility()
+    controlFrame.Visible = following
+    stopButton.Visible = following
+    barFrame.Visible = following
+    flowButton.Visible = following
+end
+
+-- Clean stop
+local function stopFollowing()
+    following = false
+    targetPlayer = nil
+    percent = 0
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    percentLabel.Text = "0%"
+    flowActive = false
+    freezePhaseActive = false
+    wasTouching = false
+
+    if followConnection then
+        followConnection:Disconnect()
+        followConnection = nil
+    end
+    if buildConnection then
+        buildConnection:Disconnect()
+        buildConnection = nil
+    end
+    if freezeFollowConnection then
+        freezeFollowConnection:Disconnect()
+        freezeFollowConnection = nil
+    end
+    if touchConnection then
+        touchConnection:Disconnect()
+        touchConnection = nil
+    end
+    if motionRandomConnection then
+        motionRandomConnection:Disconnect()
+        motionRandomConnection = nil
+    end
+    if voidFreezeConnection then
+        voidFreezeConnection:Disconnect()
+        voidFreezeConnection = nil
+        voidFreezeActive = false
+    end
+
+    updateGUIVisibility()
+end
+
+-- Touch detection: fires repeating noise on touch-enter (works in & out of flow, but respects freeze)
+local function startTouchConnection()
+    if touchConnection then return end
+    touchConnection = RunService.RenderStepped:Connect(function()
+        if not following or not targetPlayer then
+            wasTouching = false
+            return
+        end
+        local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local tHRP = targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not myHRP or not tHRP then
+            wasTouching = false
+            return
+        end
+        local dist = (myHRP.Position - tHRP.Position).Magnitude
+        local touching = dist <= touchThreshold
+        if touching and not wasTouching then
+            -- entered touching -> check cooldown & play (unless in freeze)
+            if tick() - lastTouchTime >= touchCooldown and (not freezePhaseActive) then
+                lastTouchTime = tick()
+                playRepeatNoise()
+            end
+            wasTouching = true
+        elseif not touching and wasTouching then
+            wasTouching = false
+        end
+    end)
+end
+
+-- Improved Motion random sounds while moving (velocity & cooldown based; paused during freeze)
+local function startMotionRandom()
+    if motionRandomConnection then return end
+    local lastPos = nil
+    motionRandomConnection = RunService.Heartbeat:Connect(function(dt)
+        if not following then return end
+        local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not myHRP then return end
+
+        -- compute velocity magnitude & positional delta
+        local velMag = 0
+        if myHRP.Velocity then velMag = myHRP.Velocity.Magnitude end
+
+        local moved = 0
+        if lastPos then
+            moved = (myHRP.Position - lastPos).Magnitude
+        end
+        lastPos = myHRP.Position
+
+        -- skip if freezing phase (no sounds during freeze)
+        if freezePhaseActive then return end
+
+        -- consider the player "moving" if velocity or positional delta exceed thresholds
+        local moving = (velMag > 1) or (moved > 0.2)
+
+        if moving then
+            local now = tick()
+            if now - motionLastPlay >= motionCooldown then
+                local speedFactor = ((math.clamp(speed, 0.5, 10) - 0.5) / (10 - 0.5))
+                local chance = motionBaseChance + speedFactor * motionChanceScale -- ~3%..15% depending on speed
+                if math.random() < chance then
+                    motionLastPlay = now
+                    playMotionNoise()
+                end
+            end
+        end
+    end)
+end
+
+-- Follow loop (normal following + anti-void)
+local function startFollowConnection()
+    if followConnection then return end
+    followConnection = RunService.RenderStepped:Connect(function(dt)
+        if not following or flowActive or voidFreezeActive then
+            if following and not voidFreezeActive then
+                local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if myHRP and myHRP.Position and myHRP.Position.Y >= voidThreshold then
+                    lastSafeCFrame = myHRP.CFrame
+                end
+            end
+            return
+        end
+
+        if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local hrp = targetPlayer.Character.HumanoidRootPart
+            local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if myHRP then
+                if myHRP.Position.Y >= voidThreshold then
+                    lastSafeCFrame = myHRP.CFrame
+                end
+
+                local desired = getBehindCFrame(hrp)
+                local alpha = math.clamp(dt * speed, 0, 1)
+                local newCFrame = myHRP.CFrame:Lerp(desired, alpha)
+                local jitterAmt = math.sin(tick() * (6 + speed)) * 0.25
+                newCFrame = newCFrame * CFrame.new(0, 0, jitterAmt)
+                myHRP.CFrame = newCFrame
+
+                -- Void detection
+                if myHRP.Position.Y < voidThreshold then
+                    voidFreezeActive = true
+                    if voidFreezeConnection then
+                        voidFreezeConnection:Disconnect()
+                        voidFreezeConnection = nil
+                    end
+                    if not lastSafeCFrame then
+                        lastSafeCFrame = myHRP.CFrame
+                    end
+                    voidFreezeConnection = RunService.RenderStepped:Connect(function()
+                        local myHRP2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        local targetHRP = targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        if not myHRP2 then return end
+                        myHRP2.CFrame = lastSafeCFrame
+                        if targetHRP and targetHRP.Position.Y >= voidThreshold then
+                            voidFreezeActive = false
+                            if voidFreezeConnection then
+                                voidFreezeConnection:Disconnect()
+                                voidFreezeConnection = nil
+                            end
+                            if following and not flowActive then
+                                startBuild()
+                            end
+                        end
+                    end)
+                end
+            end
+        else
+            stopFollowing()
+        end
+    end)
+end
+
+-- Build-up percent while following
+local function startBuild()
+    if buildConnection then return end
+    percent = 0
+    local startTime = tick()
+    buildConnection = RunService.Heartbeat:Connect(function(dt)
+        if not following or flowActive or voidFreezeActive then return end
+        local elapsed = tick() - startTime
+        local pct = math.clamp((elapsed / buildDuration) * 100, 0, 100)
+        percent = pct
+        barFill.Size = UDim2.new(percent/100, 0, 1, 0)
+        percentLabel.Text = tostring(math.floor(percent)) .. "%"
+        if percent >= 100 then
+            if buildConnection then
+                buildConnection:Disconnect()
+                buildConnection = nil
+            end
+        end
+    end)
+end
+
+-- Flow activation (with repeated motion noise during rush & repeat noise on touch; silent during freeze)
+local function doFlowSequence()
+    if not following or flowActive or voidFreezeActive then return end
+    if percent < 100 then return end
+    if not (targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")) then return end
+
+    flowActive = true
+    freezePhaseActive = false
+    local hrp = targetPlayer.Character.HumanoidRootPart
+    local myHRP = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHRP then
+        flowActive = false
+        return
+    end
+
+    -- play motion sound at start (single transient)
+    playMotionNoise()
+
+    -- motion coroutine: plays while flowActive and not in freeze
+    local motionThread = coroutine.create(function()
+        while flowActive do
+            if not freezePhaseActive then
+                local interval = 1.2 - ((math.clamp(speed, 0.5, 10) - 0.5) / (10 - 0.5)) * 0.8
+                task.wait(math.clamp(interval + (math.random() * 0.4 - 0.2), 0.15, 2))
+                if flowActive and (not freezePhaseActive) then
+                    playMotionNoise()
+                end
+            else
+                task.wait(0.1)
+            end
+        end
+    end)
+    coroutine.resume(motionThread)
+
+    -- Zoom in camera
+    local camera = workspace.CurrentCamera
+    local originalFOV = camera.FieldOfView
+    local tweenIn = TweenService:Create(camera, TweenInfo.new(0.7, Enum.EasingStyle.Sine), {FieldOfView = 40})
+    tweenIn:Play()
+
+    -- Fast approach phase (rush)
+    local start = tick()
+    while tick() - start <= flowDuration do
+        if not (targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")) then break end
+        hrp = targetPlayer.Character.HumanoidRootPart
+        local desired = getBehindCFrame(hrp) * CFrame.new(0, 0, -0.6)
+        myHRP.CFrame = myHRP.CFrame:Lerp(desired, 0.9)
+        local push = math.sin((tick() - start) * 30) * 0.2
+        myHRP.CFrame = myHRP.CFrame * CFrame.new(0, 0, push)
+
+        -- Occasionally trigger a repeating noise during rush even if not touching (respects freeze)
+        if (tick() - lastTouchTime >= touchCooldown) and (math.random() < 0.08) and (not freezePhaseActive) then
+            lastTouchTime = tick()
+            playRepeatNoise()
+        end
+
+        -- also if we actually enter touching range, play repeat (cooldown)
+        local dist = (myHRP.Position - hrp.Position).Magnitude
+        if dist <= touchThreshold and (tick() - lastTouchTime >= touchCooldown) and (not freezePhaseActive) then
+            lastTouchTime = tick()
+            playRepeatNoise()
+        end
+
+        task.wait(0.03)
+    end
+
+    -- Freeze at touching position while keeping locked to target
+    if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        local finalTouchOffset = CFrame.new(0, 0, 1.1)
+        if freezeFollowConnection then
+            freezeFollowConnection:Disconnect()
+            freezeFollowConnection = nil
+        end
+
+        -- START FREEZE: silence noises for freeze duration
+        freezePhaseActive = true
+
+        freezeFollowConnection = RunService.RenderStepped:Connect(function()
+            if not (targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart")) then
+                if freezeFollowConnection then
+                    freezeFollowConnection:Disconnect()
+                    freezeFollowConnection = nil
+                end
+                return
+            end
+            local tHRP = targetPlayer.Character.HumanoidRootPart
+            myHRP.CFrame = tHRP.CFrame * finalTouchOffset
+        end)
+
+        -- per your request: NO noise when freezing starts (so NO playRepeatNoise here)
+    end
+
+    -- White vignette/frame effect
+    local whiteFade = Instance.new("Frame")
+    whiteFade.Size = UDim2.new(1, 0, 1, 0)
+    whiteFade.BackgroundColor3 = Color3.new(1,1,1)
+    whiteFade.BackgroundTransparency = 1
+    whiteFade.ZIndex = 10
+    whiteFade.Parent = screenGui
+
+    TweenService:Create(whiteFade, TweenInfo.new(0.6), {BackgroundTransparency = 0.2}):Play()
+    task.wait(freezeDuration)
+    TweenService:Create(whiteFade, TweenInfo.new(0.8), {BackgroundTransparency = 1}):Play()
+    task.wait(0.8)
+    whiteFade:Destroy()
+
+    -- stop freeze-follow
+    if freezeFollowConnection then
+        freezeFollowConnection:Disconnect()
+        freezeFollowConnection = nil
+    end
+
+    -- END FREEZE: re-enable sounds
+    freezePhaseActive = false
+
+    -- Reset camera
+    TweenService:Create(camera, TweenInfo.new(0.7, Enum.EasingStyle.Sine), {FieldOfView = originalFOV}):Play()
+
+    -- Reset percent and flow state
+    percent = 0
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    percentLabel.Text = "0%"
+    flowActive = false
+
+    -- restart build if still following
+    if following then
+        startBuild()
+    end
+end
+
+-- Start following target (player)
+local function startFollowing(p)
+    if not p or p == LocalPlayer then return end
+    targetPlayer = p
+    following = true
+    percent = 0
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    percentLabel.Text = "0%"
+    wasTouching = false
+    lastTouchTime = 0
+    updateGUIVisibility()
+    startFollowConnection()
+    startBuild()
+    startTouchConnection()
+    startMotionRandom()
+end
+
+-- Tool activated: click a player to start following them
+tool.Activated:Connect(function()
+    local t = nil
+    if Mouse and Mouse.Target and Mouse.Target.Parent then
+        local maybePlayer = Players:GetPlayerFromCharacter(Mouse.Target.Parent)
+        if maybePlayer then
+            t = maybePlayer
+        end
+    end
+    if t and t ~= LocalPlayer then
+        startFollowing(t)
+    end
+end)
+
+-- Stop button
+stopButton.MouseButton1Click:Connect(stopFollowing)
+tool.Unequipped:Connect(stopFollowing)
+
+-- Flow button click
+flowButton.MouseButton1Click:Connect(function()
+    if percent >= 100 and not flowActive and not voidFreezeActive then
+        doFlowSequence()
+    end
+end)
+
+-- Speed box focus lost -> set speed
+speedBox.FocusLost:Connect(function(enterPressed)
+    local val = tonumber(speedBox.Text)
+    if val then
+        val = math.clamp(val, 0.5, 10)
+        speed = val
+        speedBox.Text = tostring(speed)
+    else
+        speedBox.Text = tostring(speed)
+    end
+end)
+
+-- Ensure GUI hidden initially
+updateGUIVisibility()
