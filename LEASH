@@ -1,0 +1,283 @@
+--[[
+LeashTool (executable) — No player-pull version
+- Replaces physical RopeConstraint with a visual Beam (no forces).
+- Keeps NPC follow logic (humanoid:MoveTo) but avoids pulling the player.
+- Avoids moving NPC while player is jumping to prevent "tug back" on jump.
+Paste into your executor and run.
+--]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+if not player then return end
+local backpack = player:WaitForChild("Backpack")
+
+-- Create tool if missing
+local function makeTool()
+    local tool = Instance.new("Tool")
+    tool.Name = "LeashTool"
+    tool.CanBeDropped = false
+    tool.RequiresHandle = true
+
+    local handle = Instance.new("Part")
+    handle.Name = "Handle"
+    handle.Size = Vector3.new(1,1,1)
+    handle.Transparency = 0.6
+    handle.Anchored = false
+    handle.CanCollide = false
+    handle.Parent = tool
+
+    tool.Parent = backpack
+    return tool
+end
+
+local tool = backpack:FindFirstChild("LeashTool") or makeTool()
+
+-- Storage for leashes
+local leashes = {}
+
+-- Utilities to find parts
+local function findLeftArm(character)
+    local names = {"LeftLowerArm","LeftUpperArm","Left Arm","LeftHand","LeftHandAttachment"}
+    for _,n in ipairs(names) do
+        local p = character:FindFirstChild(n, true)
+        if p and p:IsA("BasePart") then return p end
+    end
+    if character.PrimaryPart and character.PrimaryPart:IsA("BasePart") then
+        return character.PrimaryPart
+    end
+    for _,v in pairs(character:GetChildren()) do
+        if v:IsA("BasePart") then return v end
+    end
+    return nil
+end
+
+local function findNPCTorso(npc)
+    local try = {"UpperTorso","Torso","HumanoidRootPart"}
+    for _,n in ipairs(try) do
+        local p = npc:FindFirstChild(n, true)
+        if p and p:IsA("BasePart") then return p end
+    end
+    if npc.PrimaryPart and npc.PrimaryPart:IsA("BasePart") then return npc.PrimaryPart end
+    for _,v in pairs(npc:GetChildren()) do
+        if v:IsA("BasePart") then return v end
+    end
+    return nil
+end
+
+local function getNPCFromTarget(target)
+    if not target then return nil end
+    local model = target:FindFirstAncestorOfClass("Model")
+    if not model then return nil end
+    if Players:GetPlayerFromCharacter(model) then return nil end
+    if not model:FindFirstChildOfClass("Humanoid") then return nil end
+    return model
+end
+
+-- Collar creation (non-colliding)
+local function createCollar(npc, torsoPart)
+    if not torsoPart then return nil end
+    local collar = Instance.new("Part")
+    collar.Name = "LeashCollar"
+    collar.Size = Vector3.new(0.6, 0.18, 0.6)
+    collar.Shape = Enum.PartType.Cylinder
+    collar.CanCollide = false
+    collar.Anchored = false
+    collar.Material = Enum.Material.SmoothPlastic
+    collar.Color = Color3.fromRGB(255,170,0)
+    collar.Parent = npc
+    collar.CFrame = torsoPart.CFrame * CFrame.new(0, 0.5, 0) * CFrame.Angles(0,0,math.rad(90))
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = collar
+    weld.Part1 = torsoPart
+    weld.Parent = collar
+    return collar
+end
+
+-- Visual rope as Beam (no physics)
+local function createVisualBeam(attP, attN)
+    if not attP or not attN then return nil end
+    local beamHolder = Instance.new("Folder")
+    beamHolder.Name = "LeashBeamHolder"
+    beamHolder.Parent = Workspace
+
+    local beam = Instance.new("Beam")
+    beam.Name = "LeashBeam"
+    beam.Attachment0 = attP
+    beam.Attachment1 = attN
+    beam.Width0 = 0.12
+    beam.Width1 = 0.12
+    beam.FaceCamera = false
+    beam.Transparency = NumberSequence.new(0)
+    beam.LightEmission = 0.2
+    beam.Parent = beamHolder
+
+    -- A subtle BeamTexture can be added for style; optional
+    -- local tex = Instance.new("Texture")
+    -- tex.Texture = "rbxassetid://0" -- optional
+    -- tex.Parent = beam
+
+    return beamHolder
+end
+
+-- Add leash (visual-only rope, no physics)
+local function addLeash(npc)
+    if not npc or not npc.Parent then return end
+    if leashes[npc] then return end
+
+    local character = player.Character or player.CharacterAdded:Wait()
+    local leftArm = findLeftArm(character)
+    if not leftArm then return end
+
+    local torsoPart = findNPCTorso(npc)
+    if not torsoPart then return end
+
+    -- Attachments: player side BELOW left arm, npc side TOP of torso
+    local attP = Instance.new("Attachment")
+    attP.Name = "Leash_Att_P"
+    attP.Parent = leftArm
+    attP.Position = Vector3.new(0, -0.9, 0)
+
+    local attN = Instance.new("Attachment")
+    attN.Name = "Leash_Att_N"
+    attN.Parent = torsoPart
+    attN.Position = Vector3.new(0, 0.65, 0)
+
+    -- Visual beam (no physics) replaces RopeConstraint
+    local beamHolder = createVisualBeam(attP, attN)
+
+    local collar = createCollar(npc, torsoPart)
+
+    local humanoid = npc:FindFirstChildOfClass("Humanoid")
+    local root = npc:FindFirstChild("HumanoidRootPart") or npc.PrimaryPart
+
+    -- Follow behavior (throttled)
+    local accumulator = 0
+    local tickInterval = 0.18
+    local playerHumanoid = character:FindFirstChildOfClass("Humanoid")
+
+    local conn
+    conn = RunService.Heartbeat:Connect(function(dt)
+        accumulator = accumulator + dt
+
+        -- No physics rope to update; beam will automatically use attachments.
+        -- If attachments get removed, the beam will show nothing.
+
+        if accumulator >= tickInterval then
+            accumulator = 0
+
+            -- safety checks
+            if not player or not player.Character or not player.Character.PrimaryPart then
+                if conn and conn.Connected then conn:Disconnect() end
+                -- cleanup handled by removeLeash below
+                return
+            end
+            if not npc or not npc.Parent then
+                if conn and conn.Connected then conn:Disconnect() end
+                leashes[npc] = nil
+                return
+            end
+            if not humanoid or not root then return end
+
+            -- If player is jumping or falling, skip MoveTo (prevents tug-back on jump)
+            local skipMove = false
+            if playerHumanoid then
+                local state = playerHumanoid:GetState()
+                if state == Enum.HumanoidStateType.Jumping or state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.FallingDown then
+                    skipMove = true
+                end
+            end
+
+            if not skipMove then
+                -- compute follow target BEHIND the player to avoid blocking
+                local charPP = player.Character.PrimaryPart
+                local behindOffset = charPP.CFrame.LookVector * 3 -- 3 studs behind
+                local desired = charPP.Position - behindOffset
+                desired = Vector3.new(desired.X, root.Position.Y, desired.Z)
+
+                local dist = (charPP.Position - root.Position).Magnitude
+                local minDistance = 3.2
+                if dist < minDistance then
+                    desired = charPP.Position - charPP.CFrame.LookVector * (minDistance + 0.5)
+                    desired = Vector3.new(desired.X, root.Position.Y, desired.Z)
+                end
+
+                if (charPP.Position - root.Position).Magnitude > (minDistance + 0.5) then
+                    pcall(function() humanoid:MoveTo(desired) end)
+                else
+                    pcall(function() humanoid:MoveTo(root.Position) end)
+                end
+            end
+        end
+    end)
+
+    leashes[npc] = {
+        AttachmentPlayer = attP;
+        AttachmentNPC = attN;
+        BeamHolder = beamHolder;
+        Collar = collar;
+        Connection = conn;
+    }
+end
+
+local function removeLeash(npc)
+    local data = leashes[npc]
+    if not data then return end
+    if data.Connection and data.Connection.Connected then data.Connection:Disconnect() end
+    if data.BeamHolder and data.BeamHolder.Parent then data.BeamHolder:Destroy() end
+    if data.AttachmentPlayer and data.AttachmentPlayer.Parent then data.AttachmentPlayer:Destroy() end
+    if data.AttachmentNPC and data.AttachmentNPC.Parent then data.AttachmentNPC:Destroy() end
+    if data.Collar and data.Collar.Parent then data.Collar:Destroy() end
+    leashes[npc] = nil
+end
+
+local function toggleLeash(npc)
+    if not npc then return end
+    if leashes[npc] then
+        removeLeash(npc)
+    else
+        addLeash(npc)
+    end
+end
+
+local function removeAllLeashes()
+    for n,_ in pairs(leashes) do
+        removeLeash(n)
+    end
+end
+
+-- Tool events
+local mouse = player:GetMouse()
+local isEquipped = false
+
+tool.Equipped:Connect(function()
+    isEquipped = true
+end)
+tool.Unequipped:Connect(function()
+    isEquipped = false
+end)
+
+tool.Activated:Connect(function()
+    local target = mouse.Target
+    local npc = getNPCFromTarget(target)
+    if not npc then return end
+    toggleLeash(npc)
+end)
+
+player.CharacterAdded:Connect(function(newChar)
+    -- update behavior on respawn
+end)
+
+-- Hotkey to clear all leashes (L)
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.L then
+        removeAllLeashes()
+    end
+end)
+
+print("[LeashTool] Executed. Visual-only rope (Beam) installed. You should no longer be pulled back by the leash.")
