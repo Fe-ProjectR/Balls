@@ -1,0 +1,733 @@
+local osclock, tspawn, twait = os.clock, task.spawn, task.wait
+local sin, cos, abs, min, max, clamp, mrandom = math.sin, math.cos, math.abs, math.min, math.max, math.clamp, math.random
+local next, pcall, type, typeof = next, pcall, type, typeof
+local i, v2, v3, cf, cfl, angles, udim2, e = Instance.new, Vector2.new, Vector3.new, CFrame.new, CFrame.lookAt, CFrame.fromEulerAngles, UDim2.new, Enum
+local v3_0 = v3()
+local plrs = game:FindFirstChildOfClass("Players")
+local rus = game:FindFirstChildOfClass("RunService")
+local ws = game:FindFirstChildOfClass("Workspace")
+local uis = game:FindFirstChildOfClass("UserInputService")
+local lp = plrs.LocalPlayer
+local char = lp.Character or lp.CharacterAdded:Wait()
+local hum = char:WaitForChild("Humanoid")
+local hrp = char:WaitForChild("HumanoidRootPart")
+local heartbeat, stepped, renderstepped = rus.Heartbeat, rus.Stepped, rus.RenderStepped
+local GetMouseLocation, GetFocusedTextBox, IsKeyDown = uis.GetMouseLocation, uis.GetFocusedTextBox, uis.IsKeyDown
+
+local settings = {
+	height = 0,
+	acceleration = 15,
+	deceleration = 25,
+	maxSpeed = 30,
+	maxTurnRate = 2.5,
+	turnAcceleration = 3,
+	hoverTiltAngle = 20,
+	positionGain = 15,
+	flyKey = e.KeyCode.T
+}
+
+local isFlying = false
+local moveDir = v3()
+local currentSpeed = 0
+local turning = 0
+local movingForward, movingBackward = false, false
+local currentFacing, currentDirection = nil, 1
+local cloneChar, cloneHum, cloneAtt, cloneWorldAtt, cloneAlignOri
+local playerAtt, worldAtt, playerAlignOri, playerLinVel
+local steppedConnection, controlGui
+
+local function gcl()
+	local cam = ws.CurrentCamera
+	local look = cam.CFrame.LookVector
+	return v3(look.X, 0, look.Z).Unit
+end
+
+local function getMoveDir(dt)
+	local forward = 0
+	if IsKeyDown(uis, e.KeyCode.W) then
+		forward = 1
+		movingForward = true
+	else
+		movingForward = false
+	end
+	if IsKeyDown(uis, e.KeyCode.S) then
+		forward = -1
+		movingBackward = true
+	else
+		movingBackward = false
+	end
+	if movingForward or movingBackward then
+		local turnFactor = movingForward and 1 or -1
+		if IsKeyDown(uis, e.KeyCode.A) then
+			turning = min(turning + settings.turnAcceleration * dt * turnFactor, settings.maxTurnRate)
+		elseif IsKeyDown(uis, e.KeyCode.D) then
+			turning = max(turning - settings.turnAcceleration * dt * turnFactor, -settings.maxTurnRate)
+		else
+			turning = turning > 0 and max(0, turning - settings.turnAcceleration * dt) or min(0, turning + settings.turnAcceleration * dt)
+		end
+	else
+		turning = turning > 0 and max(0, turning - settings.turnAcceleration * dt) or min(0, turning + settings.turnAcceleration * dt)
+	end
+	if forward ~= 0 then
+		local carDirection = cfl(v3_0, gcl()) * angles(0, turning * dt, 0)
+		return carDirection.LookVector * forward
+	else
+		return v3_0
+	end
+end
+
+local function setCol(character, canCollide)
+	if not character or not character.Parent then return end
+	if character:FindFirstChild("Torso") then
+		character.Torso.CanCollide = canCollide
+		character.Head.CanCollide = canCollide
+		for _, part in pairs({"Left Arm", "Right Arm", "Left Leg", "Right Leg"}) do
+			if character:FindFirstChild(part) then
+				character[part].CanCollide = canCollide
+			end
+		end
+	else
+		for _, part in pairs({"UpperTorso", "LowerTorso", "Head"}) do
+			if character:FindFirstChild(part) then
+				character[part].CanCollide = canCollide
+			end
+		end
+		for _, part in pairs(character:GetDescendants()) do
+			if part:IsA("BasePart") then
+				part.CanCollide = canCollide
+			end
+		end
+	end
+end
+
+local function toggle()
+	if not char or not char.Parent or not char:FindFirstChild("HumanoidRootPart") then
+		print("how")
+		return
+	end
+	isFlying = not isFlying
+	if isFlying then
+		local archivableStates = {}
+		for _, obj in pairs(char:GetDescendants()) do
+			if obj:IsA("Instance") then
+				archivableStates[obj] = obj.Archivable
+				obj.Archivable = true
+			end
+		end
+		archivableStates[char] = char.Archivable
+		char.Archivable = true
+
+		cloneChar = char:Clone()
+		if not cloneChar then
+			for obj, state in pairs(archivableStates) do
+				obj.Archivable = state
+			end
+			return
+		end
+		for _, part in pairs(cloneChar:GetDescendants()) do
+			if part:IsA("BasePart") or part:IsA("Decal") or part:IsA("Texture") then
+				part.Transparency = 1
+			elseif part:IsA("Accessory") and part:FindFirstChild("Handle") then
+				part.Handle.Transparency = 1
+			end
+		end
+		for obj, state in pairs(archivableStates) do
+			obj.Archivable = state
+		end
+		cloneChar.Name = "car"
+		cloneChar.Parent = ws
+		cloneChar:SetPrimaryPartCFrame(hrp.CFrame)
+		cloneChar.PrimaryPart = cloneChar.PrimaryPart or cloneChar:WaitForChild("HumanoidRootPart")
+		cloneHum = cloneChar:WaitForChild("Humanoid")
+		cloneHum.AutoRotate = false
+		cloneHum.WalkSpeed = 0
+		currentSpeed = 0
+		setCol(char, false)
+		if steppedConnection then steppedConnection:Disconnect() end
+		steppedConnection = stepped:Connect(function()
+			if char and char.Parent then setCol(char, false) end
+		end)
+		hum.PlatformStand = true
+		local accessories = {}
+		for _, accessory in pairs(cloneChar:GetChildren()) do
+			if accessory:IsA("Accessory") and accessory:FindFirstChild("Handle") then
+				local hatAttachment = accessory:FindFirstChildWhichIsA("Attachment")
+				if hatAttachment and hatAttachment.Name == "HatAttachment" then
+					table.insert(accessories, accessory.Handle)
+				end
+			end
+		end
+		ws.CurrentCamera.CameraSubject = #accessories > 0 and accessories[mrandom(1, #accessories)] or cloneHum
+		playerAtt = i("Attachment")
+		playerAtt.Name = "PFA"
+		playerAtt.Parent = hrp
+		worldAtt = i("Attachment")
+		worldAtt.Name = "WOA"
+		worldAtt.Parent = ws.Terrain
+		playerAlignOri = i("AlignOrientation")
+		playerAlignOri.Name = "PFLA"
+		playerAlignOri.Responsiveness = 50
+		playerAlignOri.RigidityEnabled = false
+		playerAlignOri.Attachment0 = playerAtt
+		playerAlignOri.Attachment1 = worldAtt
+		playerAlignOri.Enabled = true
+		playerAlignOri.Parent = playerAtt
+		playerLinVel = i("LinearVelocity")
+		playerLinVel.Name = "PFA"
+		playerLinVel.Attachment0 = playerAtt
+		playerLinVel.VelocityConstraintMode = e.VelocityConstraintMode.Vector
+		playerLinVel.MaxForce = math.huge
+		playerLinVel.VectorVelocity = v3(0, 0, 0)
+		playerLinVel.Enabled = true
+		playerLinVel.Parent = playerAtt
+		cloneAtt = i("Attachment")
+		cloneAtt.Name = "CA"
+		cloneAtt.Parent = cloneChar.PrimaryPart
+		cloneWorldAtt = i("Attachment")
+		cloneWorldAtt.Name = "COA"
+		cloneWorldAtt.Parent = ws.Terrain
+		cloneAlignOri = i("AlignOrientation")
+		cloneAlignOri.Name = "CFA"
+		cloneAlignOri.Attachment0 = cloneAtt
+		cloneAlignOri.Attachment1 = cloneWorldAtt
+		cloneAlignOri.Responsiveness = 50
+		cloneAlignOri.RigidityEnabled = false
+		cloneAlignOri.Enabled = true
+		cloneAlignOri.Parent = cloneAtt
+	else
+		if steppedConnection then
+			steppedConnection:Disconnect()
+			steppedConnection = nil
+		end
+		ws.CurrentCamera.CameraSubject = hum
+		if cloneChar then
+			cloneChar:Destroy()
+			cloneChar = nil
+			cloneHum = nil
+		end
+		if playerAtt then
+			playerAtt:Destroy()
+			playerAtt = nil
+		end
+		if worldAtt then
+			worldAtt:Destroy()
+			worldAtt = nil
+		end
+		if cloneWorldAtt then
+			cloneWorldAtt:Destroy()
+			cloneWorldAtt = nil
+		end
+		setCol(char, true)
+		hum.PlatformStand = false
+		hum:ChangeState(e.HumanoidStateType.GettingUp)
+	end
+end
+
+local function update(dt)
+	if not isFlying then return end
+	if not currentFacing then
+		currentFacing = cfl(v3_0, gcl())
+	end
+	local moveDir = getMoveDir(dt)
+	currentFacing = currentFacing * angles(0, turning * dt, 0)
+	local targetSpeed
+	if movingForward then
+		targetSpeed = settings.maxSpeed
+	elseif movingBackward then
+		targetSpeed = -settings.maxSpeed
+	else
+		targetSpeed = 0
+	end
+	if targetSpeed > currentSpeed then
+		currentSpeed = min(currentSpeed + settings.acceleration * dt, targetSpeed)
+	else
+		currentSpeed = max(currentSpeed - settings.deceleration * dt, targetSpeed)
+	end
+	if currentSpeed > 0 then
+		currentDirection = 1
+	elseif currentSpeed < 0 then
+		currentDirection = -1
+	end
+	if cloneWorldAtt and currentFacing then
+		cloneWorldAtt.CFrame = currentFacing
+	end
+	if worldAtt and currentFacing then
+		worldAtt.CFrame = currentFacing
+	end
+	if cloneHum and cloneChar and cloneChar.PrimaryPart then
+		local direction = currentSpeed > 0 and 1 or currentSpeed < 0 and -1 or 0
+		cloneHum:Move(cloneChar.PrimaryPart.CFrame.LookVector * direction)
+		cloneHum.WalkSpeed = math.abs(currentSpeed)
+	end
+	if cloneChar and cloneChar.PrimaryPart and playerLinVel then
+		local targetPos = cloneChar.PrimaryPart.Position + v3(0, settings.height, 0)
+		local displacement = targetPos - hrp.Position
+		local velocity = displacement * settings.positionGain
+		playerLinVel.VectorVelocity = velocity
+	end
+end
+
+local function updateUI()
+	if not controlGui then return end
+	local mainFrame = controlGui.MainFrame
+	if not mainFrame then return end
+	local toggleButton = mainFrame.ToggleButton
+	local statusContainer = mainFrame.StatusContainer
+	if toggleButton and statusContainer then
+		local statusValue = statusContainer.StatusValue
+		if statusValue then
+			if isFlying then
+				toggleButton.Text = "Deactivate"
+				toggleButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+				statusValue.Text = "Activated"
+				statusValue.TextColor3 = Color3.fromRGB(100, 255, 100)
+			else
+				toggleButton.Text = "Activate"
+				toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 50)
+				statusValue.Text = "Deactivated"
+				statusValue.TextColor3 = Color3.fromRGB(255, 100, 100)
+			end
+		end
+	end
+end
+
+local function createCorner(parent, radius)
+	local corner = i("UICorner")
+	corner.CornerRadius = UDim.new(radius or 0.1, 0)
+	corner.Parent = parent
+	return corner
+end
+
+local function createStroke(parent, color, thickness)
+	local stroke = i("UIStroke")
+	stroke.Color = color or Color3.fromRGB(50, 50, 50)
+	stroke.Thickness = thickness or 1
+	stroke.Parent = parent
+	return stroke
+end
+
+local function createSlider(parent, label, min, max, default, callback, yPos)
+	local sliderContainer = i("Frame")
+	local labelText = i("TextLabel")
+	local valueDisplay = i("TextBox")
+	local sliderBg = i("Frame")
+	local sliderFill = i("Frame")
+	local handle = i("Frame")
+	sliderContainer.Name = label.."SliderContainer"
+	sliderContainer.BackgroundTransparency = 1
+	sliderContainer.Size = udim2(1, -20, 0, 40)
+	sliderContainer.Position = udim2(0, 10, 0, yPos)
+	sliderContainer.Parent = parent
+	labelText.Name = "Label"
+	labelText.Text = label
+	labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	labelText.TextSize = 14
+	labelText.Font = e.Font.SourceSansBold
+	labelText.BackgroundTransparency = 1
+	labelText.Size = udim2(0.35, 0, 1, 0)
+	labelText.TextXAlignment = e.TextXAlignment.Left
+	labelText.Parent = sliderContainer
+	valueDisplay.Name = "Value"
+	valueDisplay.Text = string.format("%.2f", default)
+	valueDisplay.TextColor3 = Color3.fromRGB(255, 255, 255)
+	valueDisplay.TextSize = 14
+	valueDisplay.Font = e.Font.SourceSans
+	valueDisplay.BackgroundTransparency = 1
+	valueDisplay.Size = udim2(0.15, 0, 1, 0)
+	valueDisplay.Position = udim2(0.85, 0, 0, 0)
+	valueDisplay.TextXAlignment = e.TextXAlignment.Right
+	valueDisplay.ClearTextOnFocus = false
+	valueDisplay.Parent = sliderContainer
+	sliderBg.Name = "SliderBg"
+	sliderBg.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	sliderBg.Size = udim2(0.45, 0, 0.3, 0)
+	sliderBg.Position = udim2(0.375, 0, 0.35, 0)
+	sliderBg.Parent = sliderContainer
+	sliderFill.Name = "SliderFill"
+	sliderFill.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+	sliderFill.Size = udim2(((default - min) / (max - min)), 0, 1, 0)
+	sliderFill.Position = udim2(0, 0, 0, 0)
+	sliderFill.Parent = sliderBg
+	handle.Name = "Handle"
+	handle.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+	handle.Size = udim2(0, 10, 1.5, 0)
+	handle.AnchorPoint = v2(0.5, 0.5)
+	handle.Position = udim2(((default - min) / (max - min)), 0, 0.5, 0)
+	handle.Parent = sliderBg
+	createCorner(sliderFill, 0.3)
+	createCorner(sliderBg, 0.3)
+	createCorner(handle, 0.5)
+	local dragging = false
+	local inputChangedConnection = nil
+	local inputEndedConnection = nil
+	local updateValue = function(input)
+		local pos = input.Position.X
+		local relativePos = (pos - sliderBg.AbsolutePosition.X) / sliderBg.AbsoluteSize.X
+		relativePos = clamp(relativePos, 0, 1)
+		local value = min + (max - min) * relativePos
+		value = math.floor(value * 100) / 100
+		sliderFill.Size = udim2(relativePos, 0, 1, 0)
+		handle.Position = udim2(relativePos, 0, 0.5, 0)
+		if not valueDisplay:IsFocused() then
+			valueDisplay.Text = string.format("%.2f", value)
+		end
+		callback(value)
+	end
+	sliderBg.InputBegan:Connect(function(input)
+		if input.UserInputType == e.UserInputType.MouseButton1 then
+			updateValue(input)
+			dragging = true
+			if inputChangedConnection then inputChangedConnection:Disconnect() end
+			if inputEndedConnection then inputEndedConnection:Disconnect() end
+			inputChangedConnection = uis.InputChanged:Connect(function(input)
+				if dragging and input.UserInputType == e.UserInputType.MouseMovement then
+					updateValue(input)
+				end
+			end)
+			inputEndedConnection = uis.InputEnded:Connect(function(input)
+				if input.UserInputType == e.UserInputType.MouseButton1 then
+					dragging = false
+					if inputChangedConnection then
+						inputChangedConnection:Disconnect()
+						inputChangedConnection = nil
+					end
+					if inputEndedConnection then
+						inputEndedConnection:Disconnect()
+						inputEndedConnection = nil
+					end
+				end
+			end)
+		end
+	end)
+	valueDisplay.FocusLost:Connect(function()
+		local inputValue = tonumber(valueDisplay.Text)
+		if inputValue then
+			inputValue = math.floor(inputValue * 100) / 100
+			inputValue = clamp(inputValue, min, max)
+			callback(inputValue)
+			local relativePos = (inputValue - min) / (max - min)
+			sliderFill.Size = udim2(relativePos, 0, 1, 0)
+			handle.Position = udim2(relativePos, 0, 0.5, 0)
+			valueDisplay.Text = string.format("%.2f", inputValue)
+		else
+			local settingKey = string.lower(label):gsub(" ", "")
+			local currentValue = settings[settingKey]
+			valueDisplay.Text = string.format("%.2f", currentValue)
+		end
+	end)
+	return sliderContainer
+end
+
+local function createToggle(parent, label, default, callback, yPos)
+	local toggleContainer = i("Frame")
+	local labelText = i("TextLabel")
+	local toggleBg = i("Frame")
+	local toggleHandle = i("Frame")
+	toggleContainer.Name = label.."ToggleContainer"
+	toggleContainer.BackgroundTransparency = 1
+	toggleContainer.Size = udim2(1, -20, 0, 40)
+	toggleContainer.Position = udim2(0, 10, 0, yPos)
+	toggleContainer.Parent = parent
+	labelText.Name = "Label"
+	labelText.Text = label
+	labelText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	labelText.TextSize = 14
+	labelText.Font = e.Font.SourceSansBold
+	labelText.BackgroundTransparency = 1
+	labelText.Size = udim2(0.7, 0, 1, 0)
+	labelText.TextXAlignment = e.TextXAlignment.Left
+	labelText.Parent = toggleContainer
+	toggleBg.Name = "ToggleBg"
+	toggleBg.BackgroundColor3 = default and Color3.fromRGB(0, 120, 215) or Color3.fromRGB(80, 80, 80)
+	toggleBg.Size = udim2(0.2, 0, 0.6, 0)
+	toggleBg.Position = udim2(0.75, 0, 0.2, 0)
+	toggleBg.Parent = toggleContainer
+	toggleHandle.Name = "ToggleHandle"
+	toggleHandle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	toggleHandle.Size = udim2(0.45, 0, 0.8, 0)
+	toggleHandle.AnchorPoint = v2(0.5, 0.5)
+	toggleHandle.Position = udim2(default and 0.75 or 0.25, 0, 0.5, 0)
+	toggleHandle.Parent = toggleBg
+	createCorner(toggleBg, 0.5)
+	createCorner(toggleHandle, 0.5)
+	local isEnabled = default
+	toggleBg.InputBegan:Connect(function(input)
+		if input.UserInputType == e.UserInputType.MouseButton1 then
+			isEnabled = not isEnabled
+			toggleHandle:TweenPosition(
+				udim2(isEnabled and 0.75 or 0.25, 0, 0.5, 0),
+				e.EasingDirection.InOut,
+				e.EasingStyle.Quad,
+				0.15,
+				true
+			)
+			toggleBg.BackgroundColor3 = isEnabled and Color3.fromRGB(0, 120, 215) or Color3.fromRGB(80, 80, 80)
+			callback(isEnabled)
+		end
+	end)
+	return toggleContainer
+end
+
+local function CDUI()
+	if controlGui then controlGui:Destroy() end
+	controlGui = i("ScreenGui")
+	controlGui.Name = "Controls"
+	controlGui.ResetOnSpawn = false
+	controlGui.Parent = lp:WaitForChild("PlayerGui")
+	local mainFrame = i("Frame")
+	local titleBar = i("Frame")
+	local clipFrame = i("Frame")
+	local titleText = i("TextLabel")
+	local closeButton = i("TextButton")
+	local minimizeButton = i("TextButton")
+	local statusContainer = i("Frame")
+	local statusLabel = i("TextLabel")
+	local statusValue = i("TextLabel")
+	local toggleButton = i("TextButton")
+	local settingsScroll = i("ScrollingFrame")
+	local keyBindButton = i("TextButton")
+	mainFrame.Name = "MainFrame"
+	mainFrame.Size = udim2(0, 300, 0, 380)
+	mainFrame.Position = udim2(0.75, 0, 0.5, 0)
+	mainFrame.AnchorPoint = v2(0.5, 0.5)
+	mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	mainFrame.BorderSizePixel = 0
+	mainFrame.Parent = controlGui
+	titleBar.Name = "TitleBar"
+	titleBar.Size = udim2(1, 0, 0, 30)
+	titleBar.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	titleBar.BorderSizePixel = 0
+	titleBar.Parent = mainFrame
+	clipFrame.Name = "ClipFrame"
+	clipFrame.Size = udim2(1, 0, 0, 15)
+	clipFrame.Position = udim2(0, 0, 0.5, 0)
+	clipFrame.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	clipFrame.BorderSizePixel = 0
+	clipFrame.ZIndex = 0
+	clipFrame.Parent = titleBar
+	titleText.Name = "Title"
+	titleText.Text = "Controls"
+	titleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	titleText.TextSize = 16
+	titleText.Font = e.Font.SourceSansBold
+	titleText.BackgroundTransparency = 1
+	titleText.Size = udim2(1, -60, 1, 0)
+	titleText.Position = udim2(0, 10, 0, 0)
+	titleText.TextXAlignment = e.TextXAlignment.Left
+	titleText.Parent = titleBar
+	closeButton.Name = "CloseButton"
+	closeButton.Text = "X"
+	closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	closeButton.TextSize = 16
+	closeButton.Font = e.Font.SourceSansBold
+	closeButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+	closeButton.Size = udim2(0, 30, 0, 20)
+	closeButton.Position = udim2(1, -40, 0, 5)
+	closeButton.Parent = titleBar
+	minimizeButton.Name = "MinimizeButton"
+	minimizeButton.Text = "-"
+	minimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	minimizeButton.TextSize = 20
+	minimizeButton.Font = e.Font.SourceSansBold
+	minimizeButton.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+	minimizeButton.Size = udim2(0, 30, 0, 20)
+	minimizeButton.Position = udim2(1, -75, 0, 5)
+	minimizeButton.Parent = titleBar
+	statusContainer.Name = "StatusContainer"
+	statusContainer.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	statusContainer.Size = udim2(1, -20, 0, 30)
+	statusContainer.Position = udim2(0, 10, 0, 40)
+	statusContainer.Parent = mainFrame
+	statusLabel.Name = "StatusLabel"
+	statusLabel.Text = "Status:"
+	statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	statusLabel.TextSize = 14
+	statusLabel.Font = e.Font.SourceSansBold
+	statusLabel.BackgroundTransparency = 1
+	statusLabel.Size = udim2(0.3, 0, 1, 0)
+	statusLabel.TextXAlignment = e.TextXAlignment.Left
+	statusLabel.Position = udim2(0, 10, 0, 0)
+	statusLabel.Parent = statusContainer
+	statusValue.Name = "StatusValue"
+	statusValue.Text = "Deactivated"
+	statusValue.TextColor3 = Color3.fromRGB(255, 100, 100)
+	statusValue.TextSize = 14
+	statusValue.Font = e.Font.SourceSansSemibold
+	statusValue.BackgroundTransparency = 1
+	statusValue.Size = udim2(0.6, 0, 1, 0)
+	statusValue.TextXAlignment = e.TextXAlignment.Right
+	statusValue.Position = udim2(0.4, 0, 0, 0)
+	statusValue.Parent = statusContainer
+	toggleButton.Name = "ToggleButton"
+	toggleButton.Text = "Activate"
+	toggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	toggleButton.TextSize = 16
+	toggleButton.Font = e.Font.SourceSansBold
+	toggleButton.BackgroundColor3 = Color3.fromRGB(0, 150, 50)
+	toggleButton.Size = udim2(1, -20, 0, 30)
+	toggleButton.Position = udim2(0, 10, 0, 80)
+	toggleButton.Parent = mainFrame
+	settingsScroll.Name = "SettingsScroll"
+	settingsScroll.BackgroundTransparency = 1
+	settingsScroll.BorderSizePixel = 0
+	settingsScroll.Size = udim2(1, 0, 1, -120)
+	settingsScroll.Position = udim2(0, 0, 0, 120)
+	settingsScroll.ScrollBarThickness = 4
+	settingsScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
+	settingsScroll.CanvasSize = udim2(0, 0, 0, 350)
+	settingsScroll.Parent = mainFrame
+	keyBindButton.Name = "KeyBindButton"
+	keyBindButton.Text = "Toggle Key: " .. (settings.flyKey.Name or "T")
+	keyBindButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	keyBindButton.TextSize = 14
+	keyBindButton.Font = e.Font.SourceSansSemibold
+	keyBindButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	keyBindButton.Size = udim2(1, -20, 0, 30)
+	keyBindButton.Position = udim2(0, 10, 0, 10)
+	keyBindButton.Parent = settingsScroll
+	createCorner(mainFrame, 0.02)
+	createCorner(titleBar, 0.02)
+	createCorner(closeButton, 0.2)
+	createCorner(minimizeButton, 0.2)
+	createCorner(statusContainer, 0.1)
+	createCorner(toggleButton, 0.1)
+	createCorner(keyBindButton, 0.1)
+	local sliderSettings = {
+		{name = "Height", key = "height", min = -15, max = 20, default = settings.height, yPos = 50},
+		{name = "Max Speed", key = "maxSpeed", min = 5, max = 100, default = settings.maxSpeed, yPos = 100},
+		{name = "Acceleration", key = "acceleration", min = 5, max = 50, default = settings.acceleration, yPos = 150},
+		{name = "Deceleration", key = "deceleration", min = 5, max = 50, default = settings.deceleration, yPos = 200},
+		{name = "Max Turn Rate", key = "maxTurnRate", min = 0.5, max = 5, default = settings.maxTurnRate, yPos = 250},
+		{name = "Turn Acceleration", key = "turnAcceleration", min = 0.5, max = 10, default = settings.turnAcceleration, yPos = 300}
+	}
+	for _, slider in ipairs(sliderSettings) do
+		createSlider(
+			settingsScroll,
+			slider.name,
+			slider.min,
+			slider.max,
+			slider.default,
+			function(value)
+				settings[slider.key] = value
+			end,
+			slider.yPos
+		)
+	end
+	local isDragging = false
+	local dragStart = nil
+	local startPos = nil
+	local isMinimized = false
+	local isRebinding = false
+	local originalSize = mainFrame.Size
+	titleBar.InputBegan:Connect(function(input)
+		if input.UserInputType == e.UserInputType.MouseButton1 then
+			isDragging = true
+			dragStart = input.Position
+			startPos = mainFrame.Position
+		end
+	end)
+	uis.InputChanged:Connect(function(input)
+		if isDragging and input.UserInputType == e.UserInputType.MouseMovement then
+			local delta = input.Position - dragStart
+			mainFrame.Position = udim2(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+	uis.InputEnded:Connect(function(input)
+		if input.UserInputType == e.UserInputType.MouseButton1 then
+			isDragging = false
+		end
+	end)
+	minimizeButton.MouseButton1Click:Connect(function()
+		isMinimized = not isMinimized
+		if isMinimized then
+			mainFrame:TweenSize(
+				udim2(0, 300, 0, 30),
+				e.EasingDirection.Out,
+				e.EasingStyle.Quad,
+				0.3,
+				true
+			)
+			minimizeButton.Text = "+"
+			statusContainer.Visible = false
+			toggleButton.Visible = false
+			settingsScroll.Visible = false
+		else
+			mainFrame:TweenSize(
+				originalSize,
+				e.EasingDirection.Out,
+				e.EasingStyle.Quad,
+				0.3,
+				true
+			)
+			minimizeButton.Text = "-"
+			statusContainer.Visible = true
+			toggleButton.Visible = true
+			settingsScroll.Visible = true
+		end
+	end)
+	closeButton.MouseButton1Click:Connect(function()
+		if isFlying then
+			toggle()
+		end
+		controlGui:Destroy()
+		controlGui = nil
+	end)
+	toggleButton.MouseButton1Click:Connect(function()
+		toggle()
+		updateUI()
+	end)
+	keyBindButton.MouseButton1Click:Connect(function()
+		if isRebinding then return end
+		isRebinding = true
+		keyBindButton.Text = "Press any key..."
+		keyBindButton.BackgroundColor3 = Color3.fromRGB(100, 100, 200)
+		local connection
+		connection = uis.InputBegan:Connect(function(input)
+			if input.UserInputType == e.UserInputType.Keyboard then
+				settings.flyKey = input.KeyCode
+				keyBindButton.Text = "Toggle Key: " .. input.KeyCode.Name
+				keyBindButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+				isRebinding = false
+				connection:Disconnect()
+			end
+		end)
+	end)
+	return controlGui
+end
+
+local function onInputBegan(input, gp)
+	if gp then return end
+	if input.KeyCode == settings.flyKey then
+		toggle()
+		updateUI()
+	end
+end
+
+uis.InputBegan:Connect(onInputBegan)
+heartbeat:Connect(update)
+CDUI()
+
+lp.CharacterAdded:Connect(function(newChar)
+	char = newChar
+	hum = char:WaitForChild("Humanoid")
+	hrp = char:WaitForChild("HumanoidRootPart")
+	isFlying = false
+	for _, obj in pairs({
+		cloneChar, playerAtt, worldAtt, cloneWorldAtt
+		}) do
+		if obj then
+			obj:Destroy()
+			obj = nil
+		end
+	end
+	if steppedConnection then
+		steppedConnection:Disconnect()
+		steppedConnection = nil
+	end
+	cloneHum = nil
+end)
