@@ -14,7 +14,7 @@ pcall(function()
     end
 end)
 
-local AUTO_EXECUTE_LOADSTRING = [[loadstring(game:HttpGet('https://raw.githubusercontent.com/Fe-ProjectR/Balls/refs/heads/main/tes.lua'))()]]
+local AUTO_EXECUTE_LOADSTRING = "loadstring(game:HttpGet('https://raw.githubusercontent.com/Fe-ProjectR/Balls/refs/heads/main/tes.lua'))()"
 
 local SOUND_URLS = {
     Intro = "https://github.com/Fe-ProjectR/GAME-IMAGES/raw/refs/heads/main/dragon-studio-dramatic-youtube-intro-478365.mp3", 
