@@ -1,0 +1,1017 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local targetPlayer = nil
+local isAttached = false
+local attachConnection = nil
+local isMinimized = false
+local creditsOpen = false
+
+local whoMoveSpeed = 10
+local whoMoveDistance = 1.2
+
+local modes = {
+	"Default", "Tool", "Front", "Head", "Backpack", "Who?", "Who?2",
+	"Orbit", "Ceiling", "Shadow", "Mirror", "Helicopter"
+}
+local currentModeIndex = 1
+local modesUsingWhoSettings = { ["Who?"] = true, ["Who?2"] = true, ["Orbit"] = true, ["Helicopter"] = true }
+
+local originalCameraType = nil
+local cameraLockConnection = nil
+
+local WhoSettingsFrame
+local ModeLabel
+local SwitchTrack
+local SwitchKnob
+local SwitchLabel
+local MainFrame
+local ShadowFrame
+local BottomContainer
+local updateListHeight
+local CreditsFrame
+
+local Theme = {
+	bg = Color3.fromRGB(24, 24, 26),
+	bgLight = Color3.fromRGB(46, 46, 50),
+	chip = Color3.fromRGB(255, 255, 255),
+	blue = Color3.fromRGB(10, 132, 255),
+	green = Color3.fromRGB(40, 200, 64),
+	red = Color3.fromRGB(255, 95, 86),
+	yellow = Color3.fromRGB(255, 189, 46),
+	grayOff = Color3.fromRGB(120, 120, 128),
+	textPrimary = Color3.fromRGB(255, 255, 255),
+	textSecondary = Color3.fromRGB(170, 170, 176),
+}
+
+local function isMobileDevice()
+	return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+end
+
+local function getLayoutProfile()
+	local viewport = Camera.ViewportSize
+	local mobile = isMobileDevice() or viewport.X < 550
+
+	if mobile then
+		local width = math.clamp(viewport.X * 0.9, 270, 340)
+		local height = math.clamp(viewport.Y * 0.74, 460, 580)
+		return {
+			mobile = true,
+			size = UDim2.new(0, width, 0, height),
+			titleTextSize = 19,
+			bodyTextSize = 15,
+			rowHeight = 54,
+			padding = 18,
+			gap = 14,
+			cardRadius = 26,
+			chipRadius = 16,
+		}
+	else
+		return {
+			mobile = false,
+			size = UDim2.new(0, 340, 0, 480),
+			titleTextSize = 17,
+			bodyTextSize = 14,
+			rowHeight = 42,
+			padding = 14,
+			gap = 10,
+			cardRadius = 22,
+			chipRadius = 14,
+		}
+	end
+end
+
+local layout = getLayoutProfile()
+local headerHeight = layout.rowHeight + 16
+
+local function addGlassLook(frame, radius, glassColor, glassTransparency, strokeTransparency)
+	frame.BackgroundColor3 = glassColor
+	frame.BackgroundTransparency = glassTransparency
+	frame.ClipsDescendants = true
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = frame
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 255, 255)
+	stroke.Thickness = 1
+	stroke.Transparency = strokeTransparency or 0.75
+	stroke.Parent = frame
+
+	local gloss = Instance.new("Frame")
+	gloss.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	gloss.BorderSizePixel = 0
+	gloss.Size = UDim2.new(1, 0, 0.5, 0)
+	gloss.ZIndex = frame.ZIndex
+	gloss.Interactable = false
+	gloss.Parent = frame
+
+	local glossCorner = Instance.new("UICorner")
+	glossCorner.CornerRadius = UDim.new(0, radius)
+	glossCorner.Parent = gloss
+
+	local glossGradient = Instance.new("UIGradient")
+	glossGradient.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.88),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	glossGradient.Rotation = 90
+	glossGradient.Parent = gloss
+
+	return corner, stroke, gloss
+end
+
+local function styleInputBox(inputFrame)
+	inputFrame.BackgroundColor3 = Theme.chip
+	inputFrame.BackgroundTransparency = 0.85
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 10)
+	corner.Parent = inputFrame
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 255, 255)
+	stroke.Thickness = 1
+	stroke.Transparency = 0.65
+	stroke.Parent = inputFrame
+end
+
+local function addPressFeedback(button)
+	local scale = Instance.new("UIScale")
+	scale.Parent = button
+
+	local function pressDown()
+		TweenService:Create(scale, TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 0.94 }):Play()
+	end
+	local function pressUp()
+		TweenService:Create(scale, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	end
+
+	button.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			pressDown()
+		end
+	end)
+	button.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			pressUp()
+		end
+	end)
+end
+
+local function createMacButton(color, size)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0, size, 0, size)
+	btn.BackgroundColor3 = color
+	btn.Text = ""
+	btn.AutoButtonColor = false
+	btn.ZIndex = 3
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = btn
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(0, 0, 0)
+	stroke.Thickness = 1
+	stroke.Transparency = 0.85
+	stroke.Parent = btn
+
+	return btn
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PlayerTrackerGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+
+local okParent = pcall(function() ScreenGui.Parent = CoreGui end)
+if not okParent then ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+ShadowFrame = Instance.new("Frame")
+ShadowFrame.Name = "Shadow"
+ShadowFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+ShadowFrame.Size = UDim2.new(0, layout.size.X.Offset + 24, 0, layout.size.Y.Offset + 24)
+ShadowFrame.Position = UDim2.new(0.5, 0, 0.5, 6)
+ShadowFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ShadowFrame.BackgroundTransparency = 0.6
+ShadowFrame.BorderSizePixel = 0
+ShadowFrame.ZIndex = 0
+ShadowFrame.Parent = ScreenGui
+
+local shadowCorner = Instance.new("UICorner")
+shadowCorner.CornerRadius = UDim.new(0, layout.cardRadius + 8)
+shadowCorner.Parent = ShadowFrame
+
+MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+MainFrame.BackgroundColor3 = Theme.bg
+MainFrame.BackgroundTransparency = 1
+MainFrame.Size = UDim2.new(0, layout.size.X.Offset * 0.7, 0, layout.size.Y.Offset * 0.7)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.ZIndex = 1
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, layout.cardRadius)
+MainCorner.Parent = MainFrame
+
+local MainGradient = Instance.new("UIGradient")
+MainGradient.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Theme.bgLight),
+	ColorSequenceKeypoint.new(1, Theme.bg),
+})
+MainGradient.Rotation = 100
+MainGradient.Parent = MainFrame
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(255, 255, 255)
+MainStroke.Thickness = 1
+MainStroke.Transparency = 0.75
+MainStroke.Parent = MainFrame
+
+local GlossHighlight = Instance.new("Frame")
+GlossHighlight.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+GlossHighlight.BorderSizePixel = 0
+GlossHighlight.Size = UDim2.new(1, 0, 0.4, 0)
+GlossHighlight.ZIndex = 1
+GlossHighlight.Parent = MainFrame
+
+local GlossGradient = Instance.new("UIGradient")
+GlossGradient.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.9),
+	NumberSequenceKeypoint.new(1, 1),
+})
+GlossGradient.Rotation = 90
+GlossGradient.Parent = GlossHighlight
+
+MainFrame:GetPropertyChangedSignal("Position"):Connect(function()
+	ShadowFrame.Position = UDim2.new(
+		MainFrame.Position.X.Scale, MainFrame.Position.X.Offset,
+		MainFrame.Position.Y.Scale, MainFrame.Position.Y.Offset + 6
+	)
+end)
+MainFrame:GetPropertyChangedSignal("Size"):Connect(function()
+	ShadowFrame.Size = UDim2.new(0, MainFrame.AbsoluteSize.X + 24, 0, MainFrame.AbsoluteSize.Y + 24)
+end)
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, headerHeight)
+TitleBar.BackgroundTransparency = 1
+TitleBar.Active = true
+TitleBar.ZIndex = 2
+TitleBar.Parent = MainFrame
+
+local GrabHandle = Instance.new("Frame")
+GrabHandle.Size = UDim2.new(0, 40, 0, 5)
+GrabHandle.Position = UDim2.new(0.5, -20, 0, 8)
+GrabHandle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+GrabHandle.BackgroundTransparency = 0.5
+GrabHandle.BorderSizePixel = 0
+GrabHandle.ZIndex = 2
+GrabHandle.Parent = TitleBar
+local GrabCorner = Instance.new("UICorner")
+GrabCorner.CornerRadius = UDim.new(1, 0)
+GrabCorner.Parent = GrabHandle
+
+local macBtnSize = layout.mobile and 16 or 14
+local btnGap = 8
+
+local CloseBtn = createMacButton(Theme.red, macBtnSize)
+CloseBtn.Position = UDim2.new(0, layout.padding, 0.5, -macBtnSize/2)
+CloseBtn.Parent = TitleBar
+addPressFeedback(CloseBtn)
+
+local MinimizeBtn = createMacButton(Theme.yellow, macBtnSize)
+MinimizeBtn.Position = UDim2.new(0, layout.padding + macBtnSize + btnGap, 0.5, -macBtnSize/2)
+MinimizeBtn.Parent = TitleBar
+addPressFeedback(MinimizeBtn)
+
+local CreditsBtn = createMacButton(Theme.green, macBtnSize)
+CreditsBtn.Position = UDim2.new(0, layout.padding + (macBtnSize + btnGap) * 2, 0.5, -macBtnSize/2)
+CreditsBtn.Parent = TitleBar
+addPressFeedback(CreditsBtn)
+
+local textOffsetX = layout.padding + (macBtnSize * 3) + (btnGap * 2) + 12
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Name = "TitleLabel"
+TitleLabel.Size = UDim2.new(1, -textOffsetX - layout.padding, 0, 22)
+TitleLabel.Position = UDim2.new(0, textOffsetX, 0, (headerHeight / 2) - 19)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "Hackerman UI"
+TitleLabel.TextColor3 = Theme.textPrimary
+TitleLabel.Font = Enum.Font.GothamSemibold
+TitleLabel.TextSize = layout.titleTextSize
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+TitleLabel.ZIndex = 2
+TitleLabel.Parent = TitleBar
+
+local SubtitleLabel = Instance.new("TextLabel")
+SubtitleLabel.Name = "SubtitleLabel"
+SubtitleLabel.Size = UDim2.new(1, -textOffsetX - layout.padding, 0, 16)
+SubtitleLabel.Position = UDim2.new(0, textOffsetX, 0, (headerHeight / 2) + 3)
+SubtitleLabel.BackgroundTransparency = 1
+SubtitleLabel.Text = "No target selected"
+SubtitleLabel.TextColor3 = Theme.textSecondary
+SubtitleLabel.Font = Enum.Font.Gotham
+SubtitleLabel.TextSize = layout.bodyTextSize - 2
+SubtitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+SubtitleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+SubtitleLabel.ZIndex = 2
+SubtitleLabel.Parent = TitleBar
+
+local Body = Instance.new("Frame")
+Body.Name = "Body"
+Body.Size = UDim2.new(1, 0, 1, -headerHeight)
+Body.Position = UDim2.new(0, 0, 0, headerHeight)
+Body.BackgroundTransparency = 1
+Body.ZIndex = 2
+Body.Parent = MainFrame
+
+local SearchBar = Instance.new("TextBox")
+SearchBar.Size = UDim2.new(1, -layout.padding * 2, 0, layout.rowHeight)
+SearchBar.Position = UDim2.new(0, layout.padding, 0, layout.padding)
+SearchBar.PlaceholderText = "Search players"
+SearchBar.PlaceholderColor3 = Theme.textSecondary
+SearchBar.Text = ""
+SearchBar.TextColor3 = Theme.textPrimary
+SearchBar.Font = Enum.Font.Gotham
+SearchBar.TextSize = layout.bodyTextSize
+SearchBar.TextXAlignment = Enum.TextXAlignment.Left
+SearchBar.ClearTextOnFocus = false
+SearchBar.ZIndex = 2
+SearchBar.Parent = Body
+addGlassLook(SearchBar, layout.chipRadius, Theme.chip, 0.9, 0.8)
+
+local SearchPadding = Instance.new("UIPadding")
+SearchPadding.PaddingLeft = UDim.new(0, 16)
+SearchPadding.PaddingRight = UDim.new(0, 16)
+SearchPadding.Parent = SearchBar
+
+local refreshRowHeight = math.floor(layout.rowHeight * 0.7)
+local RefreshBtn = Instance.new("TextButton")
+RefreshBtn.Name = "RefreshBtn"
+RefreshBtn.Size = UDim2.new(1, -layout.padding * 2, 0, refreshRowHeight)
+RefreshBtn.Position = UDim2.new(0, layout.padding, 0, layout.padding + layout.rowHeight + layout.gap)
+RefreshBtn.Text = "Refresh List"
+RefreshBtn.TextColor3 = Theme.blue
+RefreshBtn.Font = Enum.Font.GothamMedium
+RefreshBtn.TextSize = layout.bodyTextSize
+RefreshBtn.AutoButtonColor = false
+RefreshBtn.ZIndex = 2
+RefreshBtn.Parent = Body
+addGlassLook(RefreshBtn, layout.chipRadius, Theme.chip, 0.93, 0.82)
+addPressFeedback(RefreshBtn)
+
+BottomContainer = Instance.new("Frame")
+BottomContainer.Name = "BottomContainer"
+BottomContainer.Size = UDim2.new(1, -layout.padding * 2, 0, 0)
+BottomContainer.Position = UDim2.new(0, layout.padding, 1, -layout.padding)
+BottomContainer.AnchorPoint = Vector2.new(0, 1)
+BottomContainer.BackgroundTransparency = 1
+BottomContainer.AutomaticSize = Enum.AutomaticSize.Y
+BottomContainer.ZIndex = 2
+BottomContainer.Parent = Body
+
+local BottomLayout = Instance.new("UIListLayout")
+BottomLayout.SortOrder = Enum.SortOrder.LayoutOrder
+BottomLayout.FillDirection = Enum.FillDirection.Vertical
+BottomLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+BottomLayout.Padding = UDim.new(0, layout.gap)
+BottomLayout.Parent = BottomContainer
+
+WhoSettingsFrame = Instance.new("Frame")
+WhoSettingsFrame.Name = "WhoSettingsFrame"
+WhoSettingsFrame.Size = UDim2.new(1, 0, 0, layout.rowHeight)
+WhoSettingsFrame.LayoutOrder = 1
+WhoSettingsFrame.BackgroundTransparency = 1
+WhoSettingsFrame.Visible = false
+WhoSettingsFrame.ZIndex = 2
+WhoSettingsFrame.Parent = BottomContainer
+addGlassLook(WhoSettingsFrame, layout.chipRadius, Theme.chip, 0.93, 0.82)
+
+local WhoContent = Instance.new("Frame")
+WhoContent.Name = "WhoContent"
+WhoContent.Size = UDim2.new(1, 0, 1, 0)
+WhoContent.BackgroundTransparency = 1
+WhoContent.ZIndex = 3
+WhoContent.Parent = WhoSettingsFrame
+
+local WhoListLayout = Instance.new("UIListLayout")
+WhoListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+WhoListLayout.FillDirection = Enum.FillDirection.Horizontal
+WhoListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+WhoListLayout.Padding = UDim.new(0, 8)
+WhoListLayout.Parent = WhoContent
+
+local WhoPadding = Instance.new("UIPadding")
+WhoPadding.PaddingLeft = UDim.new(0, 14)
+WhoPadding.PaddingRight = UDim.new(0, 14)
+WhoPadding.Parent = WhoContent
+
+local SpeedLabel = Instance.new("TextLabel")
+SpeedLabel.Size = UDim2.new(0, 40, 1, 0)
+SpeedLabel.LayoutOrder = 1
+SpeedLabel.BackgroundTransparency = 1
+SpeedLabel.Text = "Speed"
+SpeedLabel.TextColor3 = Theme.textSecondary
+SpeedLabel.Font = Enum.Font.Gotham
+SpeedLabel.TextSize = layout.bodyTextSize - 2
+SpeedLabel.TextXAlignment = Enum.TextXAlignment.Left
+SpeedLabel.ZIndex = 4
+SpeedLabel.Parent = WhoContent
+
+local SpeedInput = Instance.new("TextBox")
+SpeedInput.Size = UDim2.new(0, 46, 0, layout.rowHeight - 16)
+SpeedInput.LayoutOrder = 2
+SpeedInput.Text = tostring(whoMoveSpeed)
+SpeedInput.TextColor3 = Theme.textPrimary
+SpeedInput.Font = Enum.Font.GothamMedium
+SpeedInput.TextSize = layout.bodyTextSize - 1
+SpeedInput.ZIndex = 4
+SpeedInput.Parent = WhoContent
+styleInputBox(SpeedInput)
+
+SpeedInput.FocusLost:Connect(function()
+	local val = tonumber(SpeedInput.Text)
+	if val then whoMoveSpeed = val else SpeedInput.Text = tostring(whoMoveSpeed) end
+end)
+
+local DistLabel = Instance.new("TextLabel")
+DistLabel.Size = UDim2.new(0, 34, 1, 0)
+DistLabel.LayoutOrder = 3
+DistLabel.BackgroundTransparency = 1
+DistLabel.Text = "Dist"
+DistLabel.TextColor3 = Theme.textSecondary
+DistLabel.Font = Enum.Font.Gotham
+DistLabel.TextSize = layout.bodyTextSize - 2
+DistLabel.TextXAlignment = Enum.TextXAlignment.Left
+DistLabel.ZIndex = 4
+DistLabel.Parent = WhoContent
+
+local DistInput = Instance.new("TextBox")
+DistInput.Size = UDim2.new(0, 46, 0, layout.rowHeight - 16)
+DistInput.LayoutOrder = 4
+DistInput.Text = tostring(whoMoveDistance)
+DistInput.TextColor3 = Theme.textPrimary
+DistInput.Font = Enum.Font.GothamMedium
+DistInput.TextSize = layout.bodyTextSize - 1
+DistInput.ZIndex = 4
+DistInput.Parent = WhoContent
+styleInputBox(DistInput)
+
+DistInput.FocusLost:Connect(function()
+	local val = tonumber(DistInput.Text)
+	if val then whoMoveDistance = val else DistInput.Text = tostring(whoMoveDistance) end
+end)
+
+local ModeRow = Instance.new("Frame")
+ModeRow.Size = UDim2.new(1, 0, 0, layout.rowHeight)
+ModeRow.LayoutOrder = 2
+ModeRow.BackgroundTransparency = 1
+ModeRow.ZIndex = 2
+ModeRow.Parent = BottomContainer
+addGlassLook(ModeRow, layout.chipRadius, Theme.chip, 0.93, 0.82)
+
+local PrevModeBtn = Instance.new("TextButton")
+PrevModeBtn.Size = UDim2.new(0, layout.rowHeight, 1, 0)
+PrevModeBtn.Position = UDim2.new(0, 0, 0, 0)
+PrevModeBtn.BackgroundTransparency = 1
+PrevModeBtn.Text = "<"
+PrevModeBtn.TextColor3 = Theme.blue
+PrevModeBtn.Font = Enum.Font.GothamBold
+PrevModeBtn.TextSize = layout.titleTextSize + 4
+PrevModeBtn.ZIndex = 3
+PrevModeBtn.Parent = ModeRow
+addPressFeedback(PrevModeBtn)
+
+local NextModeBtn = Instance.new("TextButton")
+NextModeBtn.Size = UDim2.new(0, layout.rowHeight, 1, 0)
+NextModeBtn.Position = UDim2.new(1, -layout.rowHeight, 0, 0)
+NextModeBtn.BackgroundTransparency = 1
+NextModeBtn.Text = ">"
+NextModeBtn.TextColor3 = Theme.blue
+NextModeBtn.Font = Enum.Font.GothamBold
+NextModeBtn.TextSize = layout.titleTextSize + 4
+NextModeBtn.ZIndex = 3
+NextModeBtn.Parent = ModeRow
+addPressFeedback(NextModeBtn)
+
+ModeLabel = Instance.new("TextLabel")
+ModeLabel.Size = UDim2.new(1, -layout.rowHeight * 2, 1, 0)
+ModeLabel.Position = UDim2.new(0, layout.rowHeight, 0, 0)
+ModeLabel.BackgroundTransparency = 1
+ModeLabel.Text = modes[currentModeIndex]
+ModeLabel.TextColor3 = Theme.textPrimary
+ModeLabel.Font = Enum.Font.GothamMedium
+ModeLabel.TextSize = layout.bodyTextSize
+ModeLabel.ZIndex = 3
+ModeLabel.Parent = ModeRow
+
+local function setMode(newIndex)
+	currentModeIndex = ((newIndex - 1) % #modes) + 1
+	local newMode = modes[currentModeIndex]
+
+	local fadeOut = TweenService:Create(ModeLabel, TweenInfo.new(0.1), { TextTransparency = 1 })
+	fadeOut:Play()
+	fadeOut.Completed:Connect(function()
+		ModeLabel.Text = newMode
+		TweenService:Create(ModeLabel, TweenInfo.new(0.15), { TextTransparency = 0 }):Play()
+	end)
+
+	WhoSettingsFrame.Visible = modesUsingWhoSettings[newMode] == true
+end
+
+PrevModeBtn.MouseButton1Click:Connect(function() setMode(currentModeIndex - 1) end)
+NextModeBtn.MouseButton1Click:Connect(function() setMode(currentModeIndex + 1) end)
+
+local SwitchRow = Instance.new("Frame")
+SwitchRow.Size = UDim2.new(1, 0, 0, layout.rowHeight)
+SwitchRow.LayoutOrder = 3
+SwitchRow.BackgroundTransparency = 1
+SwitchRow.ZIndex = 2
+SwitchRow.Parent = BottomContainer
+addGlassLook(SwitchRow, layout.chipRadius, Theme.chip, 0.93, 0.82)
+
+SwitchLabel = Instance.new("TextLabel")
+SwitchLabel.Size = UDim2.new(1, -80, 1, 0)
+SwitchLabel.Position = UDim2.new(0, 16, 0, 0)
+SwitchLabel.BackgroundTransparency = 1
+SwitchLabel.Text = "Attach: Off"
+SwitchLabel.TextColor3 = Theme.textPrimary
+SwitchLabel.Font = Enum.Font.GothamMedium
+SwitchLabel.TextSize = layout.bodyTextSize
+SwitchLabel.TextXAlignment = Enum.TextXAlignment.Left
+SwitchLabel.ZIndex = 3
+SwitchLabel.Parent = SwitchRow
+
+SwitchTrack = Instance.new("TextButton")
+SwitchTrack.Name = "ToggleBtn"
+SwitchTrack.Size = UDim2.new(0, 52, 0, 30)
+SwitchTrack.Position = UDim2.new(1, -66, 0.5, -15)
+SwitchTrack.Text = ""
+SwitchTrack.BackgroundColor3 = Theme.grayOff
+SwitchTrack.BackgroundTransparency = 0.3
+SwitchTrack.AutoButtonColor = false
+SwitchTrack.ZIndex = 3
+SwitchTrack.Parent = SwitchRow
+
+local SwitchTrackCorner = Instance.new("UICorner")
+SwitchTrackCorner.CornerRadius = UDim.new(1, 0)
+SwitchTrackCorner.Parent = SwitchTrack
+
+SwitchKnob = Instance.new("Frame")
+SwitchKnob.Size = UDim2.new(0, 26, 0, 26)
+SwitchKnob.Position = UDim2.new(0, 2, 0.5, -13)
+SwitchKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+SwitchKnob.ZIndex = 4
+SwitchKnob.Parent = SwitchTrack
+
+local SwitchKnobCorner = Instance.new("UICorner")
+SwitchKnobCorner.CornerRadius = UDim.new(1, 0)
+SwitchKnobCorner.Parent = SwitchKnob
+
+local function setSwitchVisual(on)
+	local trackColor = on and Theme.green or Theme.grayOff
+	local knobPos = on and UDim2.new(1, -28, 0.5, -13) or UDim2.new(0, 2, 0.5, -13)
+
+	TweenService:Create(SwitchTrack, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+		BackgroundColor3 = trackColor,
+		BackgroundTransparency = on and 0 or 0.3,
+	}):Play()
+	TweenService:Create(SwitchKnob, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Position = knobPos }):Play()
+
+	SwitchLabel.Text = on and "Attach: On" or "Attach: Off"
+end
+
+addPressFeedback(SwitchTrack)
+
+CloseBtn.MouseButton1Click:Connect(function()
+	if attachConnection then attachConnection:Disconnect() end
+	if cameraLockConnection then cameraLockConnection:Disconnect() end
+	if originalCameraType then Camera.CameraType = originalCameraType end
+	ScreenGui:Destroy()
+end)
+
+local listTopOffset = layout.padding + layout.rowHeight + layout.gap + refreshRowHeight + layout.gap
+local ScrollingFrame = Instance.new("ScrollingFrame")
+ScrollingFrame.Name = "PlayerList"
+ScrollingFrame.Position = UDim2.new(0, layout.padding, 0, listTopOffset)
+ScrollingFrame.BackgroundTransparency = 1
+ScrollingFrame.BorderSizePixel = 0
+ScrollingFrame.ScrollBarThickness = layout.mobile and 6 or 5
+ScrollingFrame.ScrollBarImageColor3 = Theme.blue
+ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollingFrame.ZIndex = 2
+ScrollingFrame.Parent = Body
+
+local PlayerListLayout = Instance.new("UIListLayout")
+PlayerListLayout.Padding = UDim.new(0, 8)
+PlayerListLayout.Parent = ScrollingFrame
+
+updateListHeight = function()
+	if not Body.Visible then return end
+	task.defer(function()
+		local bottomHeight = BottomContainer.AbsoluteSize.Y
+		local availableHeight = Body.AbsoluteSize.Y - listTopOffset - bottomHeight - layout.padding
+		ScrollingFrame.Size = UDim2.new(1, -layout.padding * 2, 0, availableHeight)
+	end)
+end
+
+BottomContainer:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateListHeight)
+Body:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateListHeight)
+
+CreditsFrame = Instance.new("Frame")
+CreditsFrame.Name = "CreditsFrame"
+CreditsFrame.Size = UDim2.new(1, 0, 1, 0)
+CreditsFrame.Position = UDim2.new(0, 0, 0, 0)
+CreditsFrame.ZIndex = 100
+CreditsFrame.Visible = false
+CreditsFrame.Parent = MainFrame
+addGlassLook(CreditsFrame, layout.cardRadius, Theme.bg, 0.05, 0.8)
+
+local CreditsTitle = Instance.new("TextLabel")
+CreditsTitle.Size = UDim2.new(1, 0, 0, 40)
+CreditsTitle.Position = UDim2.new(0, 0, 0.22, 0)
+CreditsTitle.BackgroundTransparency = 1
+CreditsTitle.Text = "Credits"
+CreditsTitle.TextColor3 = Theme.textPrimary
+CreditsTitle.Font = Enum.Font.GothamBold
+CreditsTitle.TextSize = layout.titleTextSize + 4
+CreditsTitle.ZIndex = 101
+CreditsTitle.Parent = CreditsFrame
+
+local DevLabel = Instance.new("TextLabel")
+DevLabel.Size = UDim2.new(1, 0, 0, 30)
+DevLabel.Position = UDim2.new(0, 0, 0.38, 0)
+DevLabel.BackgroundTransparency = 1
+DevLabel.Text = "Made by: noli_0"
+DevLabel.TextColor3 = Theme.textPrimary
+DevLabel.Font = Enum.Font.GothamMedium
+DevLabel.TextSize = layout.bodyTextSize + 1
+DevLabel.ZIndex = 101
+DevLabel.Parent = CreditsFrame
+
+local GuiLabel = Instance.new("TextLabel")
+GuiLabel.Size = UDim2.new(1, 0, 0, 30)
+GuiLabel.Position = UDim2.new(0, 0, 0.48, 0)
+GuiLabel.BackgroundTransparency = 1
+GuiLabel.Text = "Gui: me still"
+GuiLabel.TextColor3 = Theme.textSecondary
+GuiLabel.Font = Enum.Font.GothamMedium
+GuiLabel.TextSize = layout.bodyTextSize + 1
+GuiLabel.ZIndex = 101
+GuiLabel.Parent = CreditsFrame
+
+local OKBtn = Instance.new("TextButton")
+OKBtn.Size = UDim2.new(0, 140, 0, layout.rowHeight)
+OKBtn.Position = UDim2.new(0.5, -70, 0.68, 0)
+OKBtn.Text = "Back"
+OKBtn.TextColor3 = Theme.blue
+OKBtn.Font = Enum.Font.GothamMedium
+OKBtn.TextSize = layout.bodyTextSize
+OKBtn.AutoButtonColor = false
+OKBtn.ZIndex = 101
+OKBtn.Parent = CreditsFrame
+addGlassLook(OKBtn, layout.chipRadius, Theme.chip, 0.85, 0.6)
+addPressFeedback(OKBtn)
+
+OKBtn.MouseButton1Click:Connect(function()
+	creditsOpen = false
+	CreditsFrame.Visible = false
+end)
+
+CreditsBtn.MouseButton1Click:Connect(function()
+	if isMinimized then return end
+	creditsOpen = not creditsOpen
+	CreditsFrame.Visible = creditsOpen
+end)
+
+local dragging, dragInput, dragStart, startPos
+
+local function clampToScreen()
+	local viewport = Camera.ViewportSize
+	local absSize = MainFrame.AbsoluteSize
+	local pos = MainFrame.Position
+
+	local minX, maxX = absSize.X / 2, viewport.X - absSize.X / 2
+	local minY, maxY = absSize.Y / 2, viewport.Y - absSize.Y / 2
+
+	local currentX = pos.X.Scale * viewport.X + pos.X.Offset
+	local currentY = pos.Y.Scale * viewport.Y + pos.Y.Offset
+
+	local clampedX = math.clamp(currentX, math.min(minX, maxX), math.max(minX, maxX))
+	local clampedY = math.clamp(currentY, math.min(minY, maxY), math.max(minY, maxY))
+
+	MainFrame.Position = UDim2.new(0, clampedX, 0, clampedY)
+end
+
+TitleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = MainFrame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+				clampToScreen()
+			end
+		end)
+	end
+end)
+
+TitleBar.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then
+		local delta = input.Position - dragStart
+		MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+Camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+	task.wait()
+	clampToScreen()
+end)
+
+local expandedSize = layout.size
+local minimizedSize = UDim2.new(expandedSize.X.Scale, expandedSize.X.Offset, 0, headerHeight)
+
+MinimizeBtn.MouseButton1Click:Connect(function()
+	isMinimized = not isMinimized
+	Body.Visible = not isMinimized
+
+	if isMinimized and creditsOpen then
+		creditsOpen = false
+		CreditsFrame.Visible = false
+	end
+
+	local targetSize = isMinimized and minimizedSize or expandedSize
+	local tween = TweenService:Create(MainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Size = targetSize })
+	tween:Play()
+	tween.Completed:Connect(function()
+		clampToScreen()
+		if not isMinimized then updateListHeight() end
+	end)
+end)
+
+task.defer(function()
+	TweenService:Create(MainFrame, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Size = expandedSize,
+		BackgroundTransparency = 0.12,
+	}):Play()
+	updateListHeight()
+end)
+
+local function populateList()
+	for _, child in ipairs(ScrollingFrame:GetChildren()) do
+		if child:IsA("Frame") then child:Destroy() end
+	end
+
+	local ySize = 0
+	local filterText = string.lower(SearchBar.Text)
+	local rowHeight = layout.mobile and 56 or 50
+	local index = 0
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer then
+			local dName = string.lower(plr.DisplayName)
+			local uName = string.lower(plr.Name)
+
+			if filterText == "" or string.find(dName, filterText) or string.find(uName, filterText) then
+				index = index + 1
+
+				local PlayerFrame = Instance.new("Frame")
+				PlayerFrame.Size = UDim2.new(1, 0, 0, rowHeight)
+				PlayerFrame.ZIndex = 2
+				PlayerFrame.Parent = ScrollingFrame
+				addGlassLook(PlayerFrame, 14, Theme.chip, 0.92, 0.82)
+
+				local targetTransparency = PlayerFrame.BackgroundTransparency
+				PlayerFrame.BackgroundTransparency = 1
+				local rowIndex = index
+				task.delay(rowIndex * 0.03, function()
+					if PlayerFrame.Parent then
+						TweenService:Create(PlayerFrame, TweenInfo.new(0.18, Enum.EasingStyle.Quad), { BackgroundTransparency = targetTransparency }):Play()
+					end
+				end)
+
+				local imgSize = rowHeight - 10
+				local ProfileImage = Instance.new("ImageLabel")
+				ProfileImage.Size = UDim2.new(0, imgSize, 0, imgSize)
+				ProfileImage.Position = UDim2.new(0, 5, 0, 5)
+				ProfileImage.BackgroundTransparency = 1
+				ProfileImage.Image = Players:GetUserThumbnailAsync(plr.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+				ProfileImage.ZIndex = 3
+				ProfileImage.Parent = PlayerFrame
+
+				local imgCorner = Instance.new("UICorner")
+				imgCorner.CornerRadius = UDim.new(1, 0)
+				imgCorner.Parent = ProfileImage
+
+				local NameLabel = Instance.new("TextLabel")
+				NameLabel.Size = UDim2.new(1, -(imgSize + 20), 1, 0)
+				NameLabel.Position = UDim2.new(0, imgSize + 12, 0, 0)
+				NameLabel.BackgroundTransparency = 1
+				NameLabel.Text = plr.DisplayName .. "\n@" .. plr.Name
+				NameLabel.TextColor3 = Theme.textPrimary
+				NameLabel.TextXAlignment = Enum.TextXAlignment.Left
+				NameLabel.Font = Enum.Font.Gotham
+				NameLabel.TextSize = layout.bodyTextSize - 1
+				NameLabel.TextWrapped = true
+				NameLabel.ZIndex = 3
+				NameLabel.Parent = PlayerFrame
+
+				local SelectBtn = Instance.new("TextButton")
+				SelectBtn.Size = UDim2.new(1, 0, 1, 0)
+				SelectBtn.BackgroundTransparency = 1
+				SelectBtn.Text = ""
+				SelectBtn.ZIndex = 3
+				SelectBtn.Parent = PlayerFrame
+
+				SelectBtn.MouseButton1Click:Connect(function()
+					targetPlayer = plr
+					SubtitleLabel.Text = "Target: " .. plr.DisplayName
+				end)
+
+				ySize = ySize + rowHeight + 8
+			end
+		end
+	end
+	ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, ySize)
+end
+
+RefreshBtn.MouseButton1Click:Connect(function()
+	populateList()
+end)
+SearchBar:GetPropertyChangedSignal("Text"):Connect(populateList)
+populateList()
+
+SwitchTrack.MouseButton1Click:Connect(function()
+	isAttached = not isAttached
+
+	if isAttached then
+		local myChar = LocalPlayer.Character
+		if not myChar or not targetPlayer or not targetPlayer.Character then
+			isAttached = false
+			return
+		end
+
+		setSwitchVisual(true)
+
+		originalCameraType = Camera.CameraType
+		Camera.CameraType = Enum.CameraType.Custom
+		if cameraLockConnection then cameraLockConnection:Disconnect() end
+		cameraLockConnection = RunService.RenderStepped:Connect(function()
+			if Camera.CameraType ~= Enum.CameraType.Custom then
+				Camera.CameraType = Enum.CameraType.Custom
+			end
+		end)
+
+		attachConnection = RunService.Heartbeat:Connect(function()
+			if isAttached and targetPlayer.Character and myChar.Parent then
+				local currentTargetRoot = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+				local currentMyRoot = myChar:FindFirstChild("HumanoidRootPart")
+				local myHumanoid = myChar:FindFirstChild("Humanoid")
+
+				if currentTargetRoot and currentMyRoot then
+					pcall(function() sethiddenproperty(currentMyRoot, "PhysicsRepRootPart", currentTargetRoot) end)
+
+					local currentMode = modes[currentModeIndex]
+					local baseCFrame = currentTargetRoot.CFrame
+					local offsetCFrame = CFrame.new(0, 0, 3)
+					local wantsSit = false
+					local wantsPlatformStand = false
+
+					if currentMode == "Default" then
+						offsetCFrame = CFrame.new(0, 0, 3)
+					elseif currentMode == "Tool" then
+						local rightArm = targetPlayer.Character:FindFirstChild("Right Arm") or targetPlayer.Character:FindFirstChild("RightHand")
+						if rightArm then
+							baseCFrame = rightArm.CFrame
+							offsetCFrame = CFrame.new(0, -1, 0) * CFrame.Angles(math.rad(-90), 0, 0)
+						else
+							offsetCFrame = CFrame.new(1.5, -0.5, -1) * CFrame.Angles(math.rad(-90), 0, 0)
+						end
+					elseif currentMode == "Front" then
+						offsetCFrame = CFrame.new(0, 0, -2.5) * CFrame.Angles(0, math.rad(180), 0)
+					elseif currentMode == "Head" then
+						local head = targetPlayer.Character:FindFirstChild("Head")
+						if head then
+							baseCFrame = head.CFrame
+							offsetCFrame = CFrame.new(0, 1.5, 0)
+						else
+							offsetCFrame = CFrame.new(0, 2.5, 0)
+						end
+						wantsSit = true
+					elseif currentMode == "Backpack" then
+						offsetCFrame = CFrame.new(0, 0.5, 1.2)
+						wantsSit = true
+					elseif currentMode == "Who?" then
+						local baseBehind = 1.5
+						local zOffset = baseBehind + math.abs(math.sin(os.clock() * whoMoveSpeed)) * whoMoveDistance
+						offsetCFrame = CFrame.new(0, 0, zOffset)
+					elseif currentMode == "Who?2" then
+						local head = targetPlayer.Character:FindFirstChild("Head")
+						local baseFront = -0.6
+						local zOffset = baseFront - (math.abs(math.sin(os.clock() * whoMoveSpeed)) * whoMoveDistance)
+
+						if head then
+							baseCFrame = head.CFrame
+							offsetCFrame = CFrame.new(0, 0, zOffset) * CFrame.Angles(0, math.rad(180), 0)
+						else
+							offsetCFrame = CFrame.new(0, 1.5, zOffset) * CFrame.Angles(0, math.rad(180), 0)
+						end
+					elseif currentMode == "Orbit" then
+						local angle = os.clock() * whoMoveSpeed
+						local radius = 3 + whoMoveDistance
+						local orbitPos = currentTargetRoot.Position + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+						baseCFrame = CFrame.new(orbitPos, currentTargetRoot.Position)
+						offsetCFrame = CFrame.new(0, 0, 0)
+					elseif currentMode == "Ceiling" then
+						local head = targetPlayer.Character:FindFirstChild("Head")
+						local originPos = head and head.Position or currentTargetRoot.Position
+						local rotationOnly = currentTargetRoot.CFrame - currentTargetRoot.CFrame.Position
+						baseCFrame = CFrame.new(originPos + Vector3.new(0, 4, 0)) * rotationOnly * CFrame.Angles(math.rad(180), 0, 0)
+						offsetCFrame = CFrame.new(0, 0, 0)
+					elseif currentMode == "Shadow" then
+						local rotationOnly = currentTargetRoot.CFrame - currentTargetRoot.CFrame.Position
+						local feetPos = currentTargetRoot.Position - Vector3.new(0, 3, 0)
+						baseCFrame = CFrame.new(feetPos) * rotationOnly
+						offsetCFrame = CFrame.new(0, 0, 2) * CFrame.Angles(math.rad(90), 0, 0)
+					elseif currentMode == "Mirror" then
+						baseCFrame = currentTargetRoot.CFrame
+						offsetCFrame = CFrame.new(0, 0, -2.5) * CFrame.Angles(0, math.rad(180), 0) * CFrame.Angles(0, 0, math.rad(180))
+					elseif currentMode == "Helicopter" then
+						local head = targetPlayer.Character:FindFirstChild("Head")
+						local pivotPos = (head and head.Position or currentTargetRoot.Position) + Vector3.new(0, 1, 0)
+						local spinAngle = os.clock() * (whoMoveSpeed * 20)
+
+						baseCFrame = CFrame.new(pivotPos) * CFrame.Angles(0, spinAngle, 0)
+						offsetCFrame = CFrame.Angles(math.rad(-90), 0, 0)
+						wantsPlatformStand = true
+					end
+
+					if myHumanoid then
+						if wantsSit then
+							myHumanoid.PlatformStand = false
+							myHumanoid.Sit = true
+						elseif wantsPlatformStand then
+							myHumanoid.Sit = false
+							myHumanoid.PlatformStand = true
+						else
+							myHumanoid.Sit = false
+							myHumanoid.PlatformStand = false
+						end
+					end
+
+					currentMyRoot.CFrame = baseCFrame * offsetCFrame
+					currentMyRoot.Velocity = Vector3.zero
+					currentMyRoot.RotVelocity = Vector3.zero
+				end
+			else
+				if attachConnection then
+					attachConnection:Disconnect()
+					attachConnection = nil
+				end
+			end
+		end)
+	else
+		setSwitchVisual(false)
+		if attachConnection then attachConnection:Disconnect(); attachConnection = nil end
+
+		if cameraLockConnection then cameraLockConnection:Disconnect(); cameraLockConnection = nil end
+		if originalCameraType then
+			Camera.CameraType = originalCameraType
+			originalCameraType = nil
+		end
+
+		pcall(function()
+			local myChar = LocalPlayer.Character
+			if myChar then
+				local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+				local myHumanoid = myChar:FindFirstChild("Humanoid")
+				if myRoot then sethiddenproperty(myRoot, "PhysicsRepRootPart", nil) end
+				if myHumanoid then
+					myHumanoid.Sit = false
+					myHumanoid.PlatformStand = false
+				end
+			end
+		end)
+	end
+end)
