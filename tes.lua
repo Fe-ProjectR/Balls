@@ -8,6 +8,12 @@ local TeleportService = game:GetService("TeleportService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
+pcall(function()
+    if makefolder and isfolder and not isfolder("AN") then
+        makefolder("AN")
+    end
+end)
+
 local AUTO_EXECUTE_LOADSTRING = [[
     -- ⚠️ REPLACE THIS WITH THE SCRIPT LOADSTRING YOU USE TO EXECUTE THIS GUI ⚠️
     -- Example: loadstring(game:HttpGet("https://raw.githubusercontent.com/..."))()
@@ -63,7 +69,7 @@ local MOVIES = {
     }
 }
 
-local THEME_FILE = "NFX_ThemeColor.txt"
+local THEME_FILE = "AN/NFX_ThemeColor.txt"
 local CurrentThemeHex = "E50914" 
 pcall(function()
     if isfile and readfile and isfile(THEME_FILE) then
@@ -92,7 +98,7 @@ local function LoadImageAsync(imageLabel, url)
 
         local safeUrl = url:gsub("[^%w]", "")
         if #safeUrl > 40 then safeUrl = safeUrl:sub(#safeUrl - 40) end
-        local filePath = "NFX_IMG_" .. safeUrl .. ".png"
+        local filePath = "AN/NFX_IMG_" .. safeUrl .. ".png"
 
         if not isfile(filePath) then
             local success, data = pcall(function() return game:HttpGet(url) end)
@@ -120,7 +126,7 @@ local function PlaySoundAsync(url, name, vol)
         if not (writefile and isfile and getAsset) then return end
         
         local safeName = name:gsub("[^%w]", "")
-        local filePath = "NFX_SND_" .. safeName .. ".mp3"
+        local filePath = "AN/NFX_SND_" .. safeName .. ".mp3"
         
         if not SOUNDS_CACHE[name] then
             if not isfile(filePath) then
